@@ -18,6 +18,7 @@ from ..client import create_client, resolve_channel
 from ..config import load_config
 from ..enumeration import enumerate_subscribers
 from ..scoring import score_user
+from ..clustering import detect_spike_windows
 
 
 REGISTRY_VERSION = 1
@@ -104,12 +105,24 @@ async def run_generate(args):
         )
 
         all_users = result["users"]
+        join_dates = result["join_dates"]
         print(f"Total users enumerated: {len(all_users)}")
+
+        # Auto-detect spike windows from join dates
+        spike_windows = []
+        if join_dates:
+            spike_windows = detect_spike_windows(join_dates)
+            if spike_windows:
+                print(f"Auto-detected {len(spike_windows)} spike window(s)")
 
         # Score and filter
         entries = []
         for uid, user in all_users.items():
-            s, reasons = score_user(user)
+            s, reasons = score_user(
+                user,
+                join_date=join_dates.get(uid),
+                spike_windows=spike_windows,
+            )
             if s >= threshold:
                 entries.append({
                     "user_id": uid,
