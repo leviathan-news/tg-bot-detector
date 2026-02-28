@@ -114,8 +114,9 @@ async def run(args):
             await asyncio.sleep(delay)
 
         # Auto-detect spike windows from search join dates
+        auto_cluster = not getattr(args, "no_auto_cluster", False)
         spike_windows = []
-        if search_join_dates:
+        if auto_cluster and search_join_dates:
             spike_windows = detect_spike_windows(search_join_dates)
             if spike_windows:
                 print(f"\nAuto-detected {len(spike_windows)} spike window(s):")

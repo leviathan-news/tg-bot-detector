@@ -182,6 +182,16 @@ class TestBuildParser:
         args = parser.parse_args(["candidates", "--channel", "@t"])
         assert args.no_auto_cluster is False
 
+    def test_analyze_no_auto_cluster_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["analyze", "--channel", "@t", "--no-auto-cluster"])
+        assert args.no_auto_cluster is True
+
+    def test_registry_generate_no_auto_cluster_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["registry", "generate", "--channel", "@t", "--no-auto-cluster"])
+        assert args.no_auto_cluster is True
+
     def test_help_output(self, capsys):
         parser = build_parser()
         with pytest.raises(SystemExit):

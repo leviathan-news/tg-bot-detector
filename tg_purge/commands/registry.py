@@ -109,8 +109,9 @@ async def run_generate(args):
         print(f"Total users enumerated: {len(all_users)}")
 
         # Auto-detect spike windows from join dates
+        auto_cluster = not getattr(args, "no_auto_cluster", False)
         spike_windows = []
-        if join_dates:
+        if auto_cluster and join_dates:
             spike_windows = detect_spike_windows(join_dates)
             if spike_windows:
                 print(f"Auto-detected {len(spike_windows)} spike window(s)")

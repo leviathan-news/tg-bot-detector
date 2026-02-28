@@ -53,7 +53,10 @@ async def run(args):
             return
 
         # Auto-detect spike windows
-        spike_windows = detect_spike_windows(join_dates)
+        auto_cluster = not getattr(args, "no_auto_cluster", False)
+        spike_windows = []
+        if auto_cluster:
+            spike_windows = detect_spike_windows(join_dates)
 
         # ── Analysis ──────────────────────────────────────────────
         dates = sorted(join_dates.values())
