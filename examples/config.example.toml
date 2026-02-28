@@ -1,0 +1,21 @@
+# tg-purge configuration file
+# Copy to config.toml and fill in your values.
+# Environment variables (TG_PURGE_*) take priority over these values.
+
+[telegram]
+# Get these from https://my.telegram.org
+api_id = "YOUR_API_ID"
+api_hash = "YOUR_API_HASH"
+
+# Session file path (default: ~/.tg_purge/session)
+# session_path = "/path/to/custom/session"
+
+[purge]
+# Default channel to analyze (avoids needing --channel every time)
+# default_channel = "@your_channel"
+
+# Delay between API queries in seconds (rate limiting)
+delay = 1.5
+
+# Default score threshold for candidate/registry generation
+threshold = 2

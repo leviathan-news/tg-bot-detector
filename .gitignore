@@ -1,0 +1,30 @@
+# Telethon session files (equivalent to login credentials — NEVER share or commit)
+*.session
+
+# Environment
+.env
+
+# Config (may contain API credentials)
+config.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Registry files (contain real user IDs — keep local)
+registry/*.json
+!registry/*.example.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
