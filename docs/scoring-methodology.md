@@ -39,7 +39,7 @@ The canonical implementation in `tg_purge/scoring.py` uses the `known-user-bot-s
 | `no_last+no_user` | +1 | No last name AND no username. Compound signal — very sparse profile. |
 | `digit_name` | +1 | First name is >30% digits (e.g., "User38291"). Generated-looking. |
 | `mixed_scripts` | +1 | First name mixes Latin + Cyrillic or Arabic scripts. Unusual for real users. |
-| `spike_join` | +2 | User joined during a detected bulk-subscription spike window. Requires join date and spike window data — not applied if either is unavailable. |
+| `spike_join` | +2 | User joined during a detected bulk-subscription spike window. Auto-detected via sliding-window analysis (1h window, mean+2σ threshold) or manually specified with --start/--end. Requires join date data — not applied if unavailable. |
 | `premium` | -2 | Telegram Premium subscriber. Strong signal of a real, paying user. |
 | `emoji_status` | -1 | Has a custom emoji status (Premium feature). Additional legitimacy signal. |
 
@@ -73,6 +73,24 @@ When evaluating the heuristics against a real channel:
 2. **Phase 2 — Search sampling**: Use 22-69 search queries to sample across the broader subscriber base. These reach inactive/dormant accounts and bot-heavy populations.
 
 3. **Phase 3 — Known-good validation**: Score a set of known real users (e.g., from your own database) and measure how many get falsely flagged. This is the ground truth for false positive rate.
+
+## Auto-Detected Spike Windows
+
+When join-date data is available, the scoring pipeline automatically detects bulk-subscription spikes using a sliding-window algorithm:
+
+1. Slide a 1-hour window across the timeline in 15-minute steps
+2. Count joins in each window position
+3. Flag windows where count exceeds mean + 2σ (standard deviations)
+4. Merge overlapping flagged windows into contiguous spike regions
+5. Apply `spike_join(+2)` to any user whose join date falls within a spike region
+
+This is enabled by default on `candidates`, `analyze`, `join-dates`, and `registry generate`. Disable with `--no-auto-cluster`.
+
+The `spike` command merges auto-detected windows with the manually specified `--start/--end` window.
+
+**Safety floor:** Windows with fewer than 5 users are not flagged regardless of statistics.
+
+**Minimum data:** Auto-detection requires at least 10 join dates. Below that, no spike detection is attempted.
 
 ## Limitations
 

@@ -66,6 +66,7 @@ Key design decisions:
 - Status type detection uses `type(status).__name__` string comparison to avoid requiring Telethon at import time — this is intentional for testability
 - Positive signals (premium, emoji_status) are stored as negative ints in config and added to score
 - Optional `join_date` + `spike_windows` params enable spike detection signal (`spike_join`, +2) without breaking backward compatibility
+- `tg_purge/clustering.py` provides `detect_spike_windows()` — sliding-window auto-detection of bulk-subscription spikes from join dates. Used by `candidates`, `registry generate`, `analyze`, and `join-dates`. Coexists with manual `--start/--end` spike windows. Disable with `--no-auto-cluster`.
 
 ### Enumeration (`tg_purge/enumeration.py`)
 
