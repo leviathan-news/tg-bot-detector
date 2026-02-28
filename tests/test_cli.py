@@ -192,6 +192,20 @@ class TestBuildParser:
         args = parser.parse_args(["registry", "generate", "--channel", "@t", "--no-auto-cluster"])
         assert args.no_auto_cluster is True
 
+    def test_join_dates_no_auto_cluster_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["join-dates", "--channel", "@t", "--no-auto-cluster"])
+        assert args.no_auto_cluster is True
+
+    def test_spike_no_auto_cluster_flag(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "spike", "--channel", "@t",
+            "--start", "2025-01-01", "--end", "2025-01-02",
+            "--no-auto-cluster",
+        ])
+        assert args.no_auto_cluster is True
+
     def test_help_output(self, capsys):
         parser = build_parser()
         with pytest.raises(SystemExit):

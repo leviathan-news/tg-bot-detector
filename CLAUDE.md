@@ -78,7 +78,7 @@ Two query sets: `MINIMAL_QUERIES` (22) and `FULL_QUERIES` (69, includes CJK char
 
 Tests use `MockUser` objects from `conftest.py` that mirror Telethon's `User` attribute interface. Mock status classes (`UserStatusEmpty`, `UserStatusOffline`, etc.) have matching `__name__` strings so `scoring.py`'s type-name-based dispatch works without Telethon installed. The `make_user` fixture is a factory with auto-incrementing IDs.
 
-No integration tests exist — all tests are unit tests against scoring logic, CLI parsing, config loading, registry CRUD, and enumeration query sets/expansion logic. No Telegram API calls in tests. 130 tests total.
+No integration tests exist — all tests are unit tests against scoring logic, CLI parsing, config loading, registry CRUD, enumeration query sets/expansion logic, and clustering. No Telegram API calls in tests. 154 tests total.
 
 ### Config priority
 

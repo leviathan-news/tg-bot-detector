@@ -121,6 +121,13 @@ def build_parser():
         default="full",
         help="Search strategy: 'full' or 'minimal'. Default: full.",
     )
+    p_spike.add_argument(
+        "--no-auto-cluster",
+        dest="no_auto_cluster",
+        action="store_true",
+        default=False,
+        help="Disable auto-detection of additional spike clusters.",
+    )
 
     # ── validate ──────────────────────────────────────────────
     p_validate = subparsers.add_parser(

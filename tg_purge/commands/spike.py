@@ -21,8 +21,13 @@ from ..formatters import print_score_distribution, print_threshold_analysis
 from ..clustering import detect_spike_windows, merge_windows
 
 
-def _analyze_group(name, users, join_dates):
-    """Analyze and print results for a group of users."""
+def _analyze_group(name, users, join_dates, spike_windows=None):
+    """Analyze and print results for a group of users.
+
+    Scores each user with optional spike_windows for spike_join detection,
+    then prints score distribution, threshold analysis, activity status,
+    profile characteristics, and sample users.
+    """
     print(f"\n{'=' * 90}")
     print(f"GROUP: {name}")
     print(f"{'=' * 90}")
@@ -34,8 +39,9 @@ def _analyze_group(name, users, join_dates):
 
     scored = []
     for uid, user in users.items():
-        s, reasons = score_user(user)
+        # Pass join_date and spike_windows so spike_join signal is applied
         join_time = join_dates.get(uid)
+        s, reasons = score_user(user, join_date=join_time, spike_windows=spike_windows)
         scored.append((user, s, reasons, join_time))
 
     scored.sort(key=lambda x: -x[1])
@@ -165,8 +171,10 @@ async def run(args):
         print(f"\nTotal participants enumerated: {len(all_users)}")
 
         # Auto-detect additional spike windows from join dates
+        # (unless disabled via --no-auto-cluster)
+        auto_cluster = not getattr(args, "no_auto_cluster", False)
         auto_windows = []
-        if join_dates:
+        if join_dates and auto_cluster:
             auto_windows = detect_spike_windows(join_dates)
             if auto_windows:
                 print(f"Auto-detected {len(auto_windows)} additional spike window(s)")
@@ -192,10 +200,10 @@ async def run(args):
                 if uid in join_dates:
                     normal_dates[uid] = join_dates[uid]
 
-        # Analyze each group
+        # Analyze each group, passing merged spike windows for scoring
         spike_label = f"Spike window ({spike_start.strftime('%Y-%m-%d %H:%M')} to {spike_end.strftime('%Y-%m-%d %H:%M')} UTC)"
-        spike_scored = _analyze_group(spike_label, spike_users, spike_dates)
-        control_scored = _analyze_group("Control group (all other dates)", normal_users, normal_dates)
+        spike_scored = _analyze_group(spike_label, spike_users, spike_dates, all_spike_windows)
+        control_scored = _analyze_group("Control group (all other dates)", normal_users, normal_dates, all_spike_windows)
 
         # Comparison summary
         if spike_scored and control_scored:

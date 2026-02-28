@@ -10,7 +10,7 @@ The detected windows are compatible with score_user()'s spike_windows
 parameter -- drop-in integration.
 """
 
-from datetime import timedelta, timezone
+from datetime import timedelta
 from math import sqrt
 
 
