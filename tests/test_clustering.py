@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from tg_purge.clustering import detect_spike_windows
+from tg_purge.clustering import detect_spike_windows, merge_windows
 
 
 def _make_dates(base, counts_per_hour):
@@ -93,3 +93,43 @@ class TestDetectSpikeWindows:
         windows_loose = detect_spike_windows(dates, sigma_multiplier=1.0)
         windows_strict = detect_spike_windows(dates, sigma_multiplier=5.0)
         assert len(windows_loose) >= len(windows_strict)
+
+
+class TestMergeWindows:
+
+    def test_empty_input(self):
+        assert merge_windows([]) == []
+
+    def test_single_window(self):
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        w = [(base, base + timedelta(hours=1))]
+        assert merge_windows(w) == w
+
+    def test_non_overlapping_stay_separate(self):
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        w1 = (base, base + timedelta(hours=1))
+        w2 = (base + timedelta(hours=3), base + timedelta(hours=4))
+        result = merge_windows([w2, w1])
+        assert result == [w1, w2]
+
+    def test_overlapping_merge(self):
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        w1 = (base, base + timedelta(hours=2))
+        w2 = (base + timedelta(hours=1), base + timedelta(hours=3))
+        result = merge_windows([w1, w2])
+        assert result == [(base, base + timedelta(hours=3))]
+
+    def test_adjacent_merge(self):
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        w1 = (base, base + timedelta(hours=1))
+        w2 = (base + timedelta(hours=1), base + timedelta(hours=2))
+        result = merge_windows([w1, w2])
+        assert result == [(base, base + timedelta(hours=2))]
+
+    def test_three_overlapping_merge_to_one(self):
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        w1 = (base, base + timedelta(hours=2))
+        w2 = (base + timedelta(hours=1), base + timedelta(hours=3))
+        w3 = (base + timedelta(hours=2, minutes=30), base + timedelta(hours=4))
+        result = merge_windows([w3, w1, w2])
+        assert result == [(base, base + timedelta(hours=4))]
