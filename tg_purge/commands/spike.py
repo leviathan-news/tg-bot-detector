@@ -18,6 +18,7 @@ from ..config import load_config
 from ..enumeration import enumerate_subscribers
 from ..scoring import score_user, format_name, status_label
 from ..formatters import print_score_distribution, print_threshold_analysis
+from ..clustering import detect_spike_windows, merge_windows
 
 
 def _analyze_group(name, users, join_dates):
@@ -162,6 +163,16 @@ async def run(args):
         join_dates = result["join_dates"]
 
         print(f"\nTotal participants enumerated: {len(all_users)}")
+
+        # Auto-detect additional spike windows from join dates
+        auto_windows = []
+        if join_dates:
+            auto_windows = detect_spike_windows(join_dates)
+            if auto_windows:
+                print(f"Auto-detected {len(auto_windows)} additional spike window(s)")
+
+        # Merge manual window with auto-detected ones
+        all_spike_windows = merge_windows([(spike_start, spike_end)] + auto_windows)
 
         # Filter to spike window
         spike_users = {}

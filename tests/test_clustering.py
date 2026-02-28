@@ -133,3 +133,23 @@ class TestMergeWindows:
         w3 = (base + timedelta(hours=2, minutes=30), base + timedelta(hours=4))
         result = merge_windows([w3, w1, w2])
         assert result == [(base, base + timedelta(hours=4))]
+
+
+class TestMergeManualAndAutoWindows:
+
+    def test_manual_and_auto_windows_merge(self):
+        """Manual spike window merges with auto-detected ones."""
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        manual = [(base, base + timedelta(hours=2))]
+        auto = [(base + timedelta(hours=5), base + timedelta(hours=6))]
+        result = merge_windows(manual + auto)
+        assert len(result) == 2
+
+    def test_overlapping_manual_and_auto_merge(self):
+        """Overlapping manual + auto windows merge into one."""
+        base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        manual = [(base, base + timedelta(hours=3))]
+        auto = [(base + timedelta(hours=2), base + timedelta(hours=4))]
+        result = merge_windows(manual + auto)
+        assert len(result) == 1
+        assert result[0] == (base, base + timedelta(hours=4))
