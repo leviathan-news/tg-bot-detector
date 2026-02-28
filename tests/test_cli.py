@@ -172,6 +172,16 @@ class TestBuildParser:
             args = parser.parse_args(cmd_args)
             assert args.delay == 2.0, f"--delay not accepted for {cmd_args[0]}"
 
+    def test_candidates_no_auto_cluster_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["candidates", "--channel", "@t", "--no-auto-cluster"])
+        assert args.no_auto_cluster is True
+
+    def test_candidates_default_auto_cluster(self):
+        parser = build_parser()
+        args = parser.parse_args(["candidates", "--channel", "@t"])
+        assert args.no_auto_cluster is False
+
     def test_help_output(self, capsys):
         parser = build_parser()
         with pytest.raises(SystemExit):
