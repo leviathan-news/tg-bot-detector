@@ -132,6 +132,8 @@ async def run(args):
     config = load_config(getattr(args, "config", None))
     if args.session_path:
         config.session_path = args.session_path
+    if getattr(args, "delay", None) is not None:
+        config.delay = args.delay
     channel_name = config.resolve_channel(args.channel)
 
     spike_start = _parse_timestamp(args.start)
@@ -151,7 +153,7 @@ async def run(args):
         print(f"\nEnumerating subscribers...", flush=True)
         result = await enumerate_subscribers(
             client, channel,
-            strategy="full",
+            strategy=getattr(args, "strategy", "full"),
             delay=config.delay,
             progress_callback=progress,
         )

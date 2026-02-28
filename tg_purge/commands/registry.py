@@ -81,6 +81,8 @@ async def run_generate(args):
     config = load_config(getattr(args, "config", None))
     if args.session_path:
         config.session_path = args.session_path
+    if getattr(args, "delay", None) is not None:
+        config.delay = args.delay
     channel_name = config.resolve_channel(args.channel)
     threshold = getattr(args, "threshold", None) or config.threshold
     output_path = getattr(args, "output", None) or DEFAULT_REGISTRY_PATH
@@ -178,7 +180,12 @@ async def run_check(args):
         print(f"Error: {e}")
         return
 
-    user_id = int(args.user_id)
+    try:
+        user_id = int(args.user_id)
+    except ValueError:
+        print(f"Error: invalid user ID: {args.user_id!r} (must be numeric)")
+        return
+
     for entry in registry["entries"]:
         if entry.get("user_id") == user_id:
             print(f"FOUND in registry:")

@@ -10,6 +10,7 @@ Never share session files, commit them to git, or store them unencrypted
 on shared systems. Consider enabling 2FA on your Telegram account.
 """
 
+import stat
 import sys
 from pathlib import Path
 
@@ -47,6 +48,12 @@ async def create_client(config):
 
     session_path = Path(config.session_path)
     session_path.parent.mkdir(parents=True, exist_ok=True)
+    # Restrict directory to owner-only access (700). Session files contain
+    # Telegram authentication tokens equivalent to login credentials.
+    try:
+        session_path.parent.chmod(stat.S_IRWXU)
+    except OSError:
+        pass  # Best-effort — may fail on some filesystems (e.g., FAT32, network mounts)
 
     is_first_run = not session_path.with_suffix(".session").exists()
 
@@ -58,12 +65,20 @@ async def create_client(config):
 
     await client.start()
 
+    # Restrict session file to owner read/write only (600) after creation.
+    session_file = session_path.with_suffix(".session")
+    if session_file.exists():
+        try:
+            session_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass  # Best-effort
+
     if is_first_run:
         padded_path = str(session_path).ljust(50)
         print(_FIRST_RUN_WARNING.format(path=padded_path), file=sys.stderr)
 
     me = await client.get_me()
-    print(f"Connected as: {me.first_name}")
+    print(f"Connected as: {me.first_name}", file=sys.stderr)
 
     return client
 
@@ -86,7 +101,7 @@ async def resolve_channel(client, channel_identifier):
 
     entity = await client.get_entity(channel_identifier)
     sub_count = getattr(entity, "participants_count", None)
-    print(f"Channel: {entity.title}")
+    print(f"Channel: {entity.title}", file=sys.stderr)
     if sub_count:
-        print(f"Subscribers: {sub_count:,}")
+        print(f"Subscribers: {sub_count:,}", file=sys.stderr)
     return entity

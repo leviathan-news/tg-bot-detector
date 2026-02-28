@@ -49,6 +49,9 @@ class ScoringConfig:
     digit_name_threshold: float = 0.3
     mixed_scripts: int = 1
 
+    # Join date clustering
+    spike_join: int = 2
+
     # Positive signals (subtracted)
     premium: int = -2
     emoji_status: int = -1
@@ -74,12 +77,17 @@ def _status_type_name(status):
     return _STATUS_TYPE_NAMES.get(type(status).__name__, "unknown")
 
 
-def score_user(user, config=None):
+def score_user(user, config=None, join_date=None, spike_windows=None):
     """Score a Telethon User object for bot likelihood.
 
     Args:
         user: A Telethon User object (or any object with compatible attributes).
         config: Optional ScoringConfig to override default weights.
+        join_date: Optional datetime of when the user joined the channel.
+            Used with spike_windows to detect bulk-subscription events.
+        spike_windows: Optional list of (start_dt, end_dt) tuples defining
+            time windows identified as bulk-subscription spikes. If join_date
+            falls within any window, the spike_join penalty is applied.
 
     Returns:
         Tuple of (score: int, reasons: list[str]) where score >= 0.
@@ -164,6 +172,15 @@ def score_user(user, config=None):
         if script_count > 1:
             score += config.mixed_scripts
             reasons.append(f"mixed_scripts(+{config.mixed_scripts})")
+
+    # Join date clustering: penalize users who joined during detected spike windows.
+    # Both join_date and spike_windows must be provided for this check.
+    if join_date is not None and spike_windows:
+        for window_start, window_end in spike_windows:
+            if window_start <= join_date < window_end:
+                score += config.spike_join
+                reasons.append(f"spike_join(+{config.spike_join})")
+                break  # Only penalize once even if windows overlap
 
     # Positive signals (reduce score)
     if getattr(user, "premium", False):

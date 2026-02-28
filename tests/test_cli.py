@@ -131,6 +131,47 @@ class TestBuildParser:
         ])
         assert args.config == "/custom/config.toml"
 
+    def test_delay_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["analyze", "--channel", "@test", "--delay", "3.0"])
+        assert args.delay == 3.0
+
+    def test_delay_default_is_none(self):
+        parser = build_parser()
+        args = parser.parse_args(["analyze", "--channel", "@test"])
+        assert args.delay is None
+
+    def test_spike_strategy_flag(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "spike", "--channel", "@test",
+            "--start", "2025-01-01", "--end", "2025-01-02",
+            "--strategy", "minimal",
+        ])
+        assert args.strategy == "minimal"
+
+    def test_spike_default_strategy(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "spike", "--channel", "@test",
+            "--start", "2025-01-01", "--end", "2025-01-02",
+        ])
+        assert args.strategy == "full"
+
+    def test_delay_on_all_subcommands(self):
+        """--delay should be accepted by all subcommands that use _add_common_args."""
+        parser = build_parser()
+        for cmd_args in [
+            ["analyze", "--channel", "@t", "--delay", "2.0"],
+            ["join-dates", "--channel", "@t", "--delay", "2.0"],
+            ["spike", "--channel", "@t", "--start", "2025-01-01", "--end", "2025-01-02", "--delay", "2.0"],
+            ["validate", "--channel", "@t", "--known-users", "u.csv", "--delay", "2.0"],
+            ["candidates", "--channel", "@t", "--delay", "2.0"],
+            ["registry", "generate", "--channel", "@t", "--delay", "2.0"],
+        ]:
+            args = parser.parse_args(cmd_args)
+            assert args.delay == 2.0, f"--delay not accepted for {cmd_args[0]}"
+
     def test_help_output(self, capsys):
         parser = build_parser()
         with pytest.raises(SystemExit):

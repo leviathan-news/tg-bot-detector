@@ -35,6 +35,12 @@ def _add_common_args(parser):
         default=None,
         help="Path to TOML config file (default: config.toml in current dir).",
     )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=None,
+        help="Seconds between API queries (overrides config, default: 1.5).",
+    )
 
 
 def build_parser():
@@ -56,7 +62,7 @@ def build_parser():
         "--strategy",
         choices=["full", "minimal"],
         default="full",
-        help="Search strategy: 'full' (67 queries) or 'minimal' (22 queries). Default: full.",
+        help="Search strategy: 'full' (69 queries) or 'minimal' (22 queries). Default: full.",
     )
 
     # ── join-dates ────────────────────────────────────────────
@@ -94,6 +100,12 @@ def build_parser():
         "--end",
         required=True,
         help="Spike window end (ISO 8601, e.g., '2025-11-09T07:00Z').",
+    )
+    p_spike.add_argument(
+        "--strategy",
+        choices=["full", "minimal"],
+        default="full",
+        help="Search strategy: 'full' or 'minimal'. Default: full.",
     )
 
     # ── validate ──────────────────────────────────────────────

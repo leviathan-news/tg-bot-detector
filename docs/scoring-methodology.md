@@ -39,6 +39,7 @@ The canonical implementation in `tg_purge/scoring.py` uses the `known-user-bot-s
 | `no_last+no_user` | +1 | No last name AND no username. Compound signal — very sparse profile. |
 | `digit_name` | +1 | First name is >30% digits (e.g., "User38291"). Generated-looking. |
 | `mixed_scripts` | +1 | First name mixes Latin + Cyrillic or Arabic scripts. Unusual for real users. |
+| `spike_join` | +2 | User joined during a detected bulk-subscription spike window. Requires join date and spike window data — not applied if either is unavailable. |
 | `premium` | -2 | Telegram Premium subscriber. Strong signal of a real, paying user. |
 | `emoji_status` | -1 | Has a custom emoji status (Premium feature). Additional legitimacy signal. |
 
@@ -49,7 +50,7 @@ Score 2 is the default threshold for flagging accounts as "likely bot." This is 
 - `no_username(+1)` + `no_photo(+1)` = score 2
 - `no_status_ever(+2)` alone = score 2
 
-This means **any** user who hides their online status and has a sparse profile gets flagged. When we validated against known contributors on `@leviathan_news`, approximately 22% of confirmed real users scored >= 2.
+This means **any** user who hides their online status and has a sparse profile gets flagged. When we validated against 104 confirmed contributors subscribed to `@leviathan_news`, approximately 2.9% (3/104) scored >= 2. However, this sample represents the most engaged users (people who registered with the bot); the false positive rate for passive real subscribers who have no footprint in our system is likely higher.
 
 **Recommendation**: Use threshold 3 or 4 for any automated actions. Threshold 2 is best used for analysis only — to understand the population, not to take action.
 
@@ -58,7 +59,7 @@ This means **any** user who hides their online status and has a sparse profile g
 | Threshold | Risk Profile | Use Case |
 |-----------|-------------|----------|
 | >= 1 | Very aggressive | Analysis only. High false positive rate. |
-| >= 2 | Aggressive | Default for analysis. ~22% false positive rate on known contributors. |
+| >= 2 | Aggressive | Default for analysis. ~2.9% FP on known engaged contributors; likely higher for passive subscribers. |
 | >= 3 | Moderate | Reasonable for candidate lists. Lower false positive rate. |
 | >= 4 | Conservative | Recommended for any action. Most flagged accounts are clearly suspicious. |
 | >= 5 | Very conservative | Deleted/scam/fake accounts only. Minimal false positives. |
@@ -69,7 +70,7 @@ When evaluating the heuristics against a real channel:
 
 1. **Phase 1 — Recent subscribers**: Analyze the 200 most recently active users. These skew toward real, engaged users and establish a baseline false positive rate.
 
-2. **Phase 2 — Search sampling**: Use 22-67 search queries to sample across the broader subscriber base. These reach inactive/dormant accounts and bot-heavy populations.
+2. **Phase 2 — Search sampling**: Use 22-69 search queries to sample across the broader subscriber base. These reach inactive/dormant accounts and bot-heavy populations.
 
 3. **Phase 3 — Known-good validation**: Score a set of known real users (e.g., from your own database) and measure how many get falsely flagged. This is the ground truth for false positive rate.
 
@@ -82,7 +83,7 @@ These scores are based on publicly visible profile attributes. There is no way t
 The scoring system was developed for **broadcast channels** (one-way communication). Signals like "no activity status" may have different meaning in groups or supergroups where users actively participate.
 
 ### 200-result query cap
-Each `GetParticipantsRequest` returns at most 200 results. On channels with >10K subscribers, this means large populations are only partially sampled. The "full" strategy (67 queries) mitigates this but does not eliminate it.
+Each `GetParticipantsRequest` returns at most 200 results. On channels with >10K subscribers, this means large populations are only partially sampled. The "full" strategy (69 queries) mitigates this but does not eliminate it.
 
 ### ~10K enumeration ceiling
 Telegram's server-side enumeration has a practical ceiling around 10K unique participants. Channels with significantly more subscribers will have incomplete coverage regardless of query strategy.
@@ -92,3 +93,6 @@ No threshold eliminates false positives entirely. Privacy-conscious users who hi
 
 ### Activity status privacy
 Users can hide their "last seen" status in Telegram privacy settings. These users appear as `no_status_ever` (+2), the single strongest bot signal. This is the largest source of false positives in the system.
+
+### Short name false positives
+Users who abbreviate their first name to a single character (e.g., "P" for a well-known contributor) trigger `short_name(+1)`. Combined with other mild signals like `no_photo`, this can push legitimate accounts to score 2. The `candidates --safelist` flag is the recommended mitigation for protecting known contributors.

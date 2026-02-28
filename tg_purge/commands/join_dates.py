@@ -23,6 +23,8 @@ async def run(args):
     config = load_config(getattr(args, "config", None))
     if args.session_path:
         config.session_path = args.session_path
+    if getattr(args, "delay", None) is not None:
+        config.delay = args.delay
     channel_name = config.resolve_channel(args.channel)
 
     client = await create_client(config)

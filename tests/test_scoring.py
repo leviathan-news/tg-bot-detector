@@ -289,3 +289,137 @@ class TestStatusLabel:
         label = status_label(user)
         assert "offline" in label
         assert "42" in label
+
+
+class TestJoinDateScoring:
+    """Test join-date spike signal integration."""
+
+    def test_no_join_date_no_change(self, clean_user):
+        """Without join_date param, scoring is unchanged."""
+        score, reasons = score_user(clean_user)
+        assert score == 0
+        assert not any("spike_join" in r for r in reasons)
+
+    def test_join_date_without_windows_no_effect(self, clean_user):
+        """Passing join_date without spike_windows has no effect."""
+        score, reasons = score_user(
+            clean_user,
+            join_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+        assert score == 0
+        assert not any("spike_join" in r for r in reasons)
+
+    def test_windows_without_join_date_no_effect(self, clean_user):
+        """Passing spike_windows without join_date has no effect."""
+        windows = [
+            (datetime(2025, 1, 1, tzinfo=timezone.utc),
+             datetime(2025, 1, 2, tzinfo=timezone.utc)),
+        ]
+        score, reasons = score_user(clean_user, spike_windows=windows)
+        assert score == 0
+        assert not any("spike_join" in r for r in reasons)
+
+    def test_join_date_outside_spike_no_penalty(self, clean_user):
+        """Join date outside spike windows adds no penalty."""
+        windows = [
+            (datetime(2025, 1, 1, tzinfo=timezone.utc),
+             datetime(2025, 1, 2, tzinfo=timezone.utc)),
+        ]
+        score, reasons = score_user(
+            clean_user,
+            join_date=datetime(2025, 6, 15, tzinfo=timezone.utc),
+            spike_windows=windows,
+        )
+        assert not any("spike_join" in r for r in reasons)
+        assert score == 0
+
+    def test_join_date_inside_spike_adds_penalty(self, clean_user):
+        """Join date inside a spike window adds the spike_join penalty."""
+        windows = [
+            (datetime(2025, 1, 1, tzinfo=timezone.utc),
+             datetime(2025, 1, 2, tzinfo=timezone.utc)),
+        ]
+        score, reasons = score_user(
+            clean_user,
+            join_date=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
+            spike_windows=windows,
+        )
+        assert any("spike_join" in r for r in reasons)
+        assert score == 2  # default spike_join weight
+
+    def test_join_date_at_window_start_inclusive(self, clean_user):
+        """Window start boundary is inclusive."""
+        windows = [
+            (datetime(2025, 3, 1, tzinfo=timezone.utc),
+             datetime(2025, 3, 2, tzinfo=timezone.utc)),
+        ]
+        score, reasons = score_user(
+            clean_user,
+            join_date=datetime(2025, 3, 1, 0, 0, tzinfo=timezone.utc),
+            spike_windows=windows,
+        )
+        assert any("spike_join" in r for r in reasons)
+
+    def test_join_date_at_window_end_exclusive(self, clean_user):
+        """Window end boundary is exclusive."""
+        windows = [
+            (datetime(2025, 3, 1, tzinfo=timezone.utc),
+             datetime(2025, 3, 2, tzinfo=timezone.utc)),
+        ]
+        score, reasons = score_user(
+            clean_user,
+            join_date=datetime(2025, 3, 2, 0, 0, tzinfo=timezone.utc),
+            spike_windows=windows,
+        )
+        assert not any("spike_join" in r for r in reasons)
+
+    def test_multiple_windows_only_penalizes_once(self, clean_user):
+        """Overlapping windows should only add the penalty once."""
+        windows = [
+            (datetime(2025, 1, 1, tzinfo=timezone.utc),
+             datetime(2025, 1, 3, tzinfo=timezone.utc)),
+            (datetime(2025, 1, 2, tzinfo=timezone.utc),
+             datetime(2025, 1, 4, tzinfo=timezone.utc)),
+        ]
+        score, reasons = score_user(
+            clean_user,
+            join_date=datetime(2025, 1, 2, 12, 0, tzinfo=timezone.utc),
+            spike_windows=windows,
+        )
+        spike_reasons = [r for r in reasons if "spike_join" in r]
+        assert len(spike_reasons) == 1
+
+    def test_spike_join_weight_configurable(self, clean_user):
+        """Spike join weight is configurable via ScoringConfig."""
+        config = ScoringConfig(spike_join=3)
+        windows = [
+            (datetime(2025, 1, 1, tzinfo=timezone.utc),
+             datetime(2025, 1, 2, tzinfo=timezone.utc)),
+        ]
+        score, reasons = score_user(
+            clean_user, config=config,
+            join_date=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
+            spike_windows=windows,
+        )
+        assert any("+3" in r for r in reasons)
+        assert score == 3
+
+    def test_spike_join_combines_with_profile_signals(self, make_user):
+        """Spike join penalty stacks with profile-based signals."""
+        user = make_user(
+            status=None,      # +2 no_status_ever
+            photo=False,      # +1 no_photo
+        )
+        windows = [
+            (datetime(2025, 1, 1, tzinfo=timezone.utc),
+             datetime(2025, 1, 2, tzinfo=timezone.utc)),
+        ]
+        score, reasons = score_user(
+            user,
+            join_date=datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc),
+            spike_windows=windows,
+        )
+        # 2 (no_status) + 1 (no_photo) + 2 (spike_join) = 5
+        assert score >= 5
+        assert any("spike_join" in r for r in reasons)
+        assert any("no_status_ever" in r for r in reasons)

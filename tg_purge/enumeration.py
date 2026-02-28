@@ -10,14 +10,19 @@ Telegram's GetParticipantsRequest has inherent limitations:
 
 Two search query sets are provided:
   - MINIMAL_QUERIES (22 queries): Fast sampling, good for quick assessments
-  - FULL_QUERIES (67 queries): Broader coverage across Latin, Cyrillic, Arabic,
+  - FULL_QUERIES (69 queries): Broader coverage across Latin, Cyrillic, Arabic,
     CJK, and numeric name patterns
+
+When a query returns exactly 200 results (the API cap), recursive prefix
+expansion drills deeper by appending characters to the query (e.g., "a" -> "aa",
+"ab", ...). This is controlled by the max_depth parameter (default 3).
 
 Neither set achieves full coverage. Results should be treated as samples,
 not census data.
 """
 
 import asyncio
+import sys
 
 from telethon.tl.functions.channels import GetParticipantsRequest
 from telethon.tl.types import (
@@ -58,6 +63,8 @@ FULL_QUERIES = [
     "\u0443", "\u0444", "\u0445", "\u0446", "\u0447", "\u0448",
     # Arabic
     "\u0645", "\u0639", "\u0627", "\u0628", "\u062a", "\u0646",
+    # CJK (common surnames — covers Chinese/Japanese/Korean bot names)
+    "\u674e", "\u738b",  # 李, 王
     # Numbers
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     # Empty string
@@ -138,16 +145,34 @@ async def fetch_by_search(client, channel, query, limit=200):
     return result.users, result.participants
 
 
+# Characters used to expand queries that hit the 200-result cap.
+# Lowercase Latin + digits covers the most common name prefixes and
+# numeric bot-farm naming patterns (e.g., "User38291").
+EXPANSION_CHARS = list("abcdefghijklmnopqrstuvwxyz0123456789")
+
+# Telegram's hard cap per GetParticipantsRequest query.
+RESULT_CAP = 200
+
+
 async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
-                                progress_callback=None):
+                                progress_callback=None, max_depth=3):
     """Enumerate channel subscribers using search-based sampling.
+
+    When a query returns exactly RESULT_CAP (200) results, it likely has more
+    matches that were truncated. If max_depth > 0, the query is recursively
+    expanded by appending each character in EXPANSION_CHARS (e.g., "a" -> "aa",
+    "ab", ...) up to max_depth levels. This splits large result sets into
+    smaller buckets that fit within the 200-result cap.
 
     Args:
         client: Connected TelegramClient.
         channel: Resolved channel entity.
-        strategy: "minimal" (22 queries) or "full" (67 queries).
+        strategy: "minimal" (22 queries) or "full" (69 queries).
         delay: Seconds between API calls (rate limiting).
         progress_callback: Optional callable(query_num, total_queries, total_found).
+            During recursive expansion, total_queries increases dynamically.
+        max_depth: Maximum recursion depth for prefix expansion (0 disables).
+            Default 3 matches the original squid-bot#77 spec (a -> aa -> aaa).
 
     Returns:
         Dict with keys:
@@ -156,15 +181,24 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
             - join_dates: dict of user_id -> datetime (where available)
             - query_stats: list of (query, result_count, new_count)
     """
-    queries = FULL_QUERIES if strategy == "full" else MINIMAL_QUERIES
+    base_queries = FULL_QUERIES if strategy == "full" else MINIMAL_QUERIES
 
     all_users = {}       # user_id -> User
     all_participants = {}  # user_id -> ChannelParticipant
     join_dates = {}      # user_id -> datetime
     query_stats = []
 
-    for i, query in enumerate(queries):
+    # Work queue: (query_string, current_depth). Base queries start at depth 0.
+    # Using deque for O(1) popleft instead of O(n) list.pop(0).
+    from collections import deque
+    work_queue = deque((q, 0) for q in base_queries)
+    total_planned = len(work_queue)
+    completed = 0
+
+    while work_queue:
+        query, depth = work_queue.popleft()
         display_q = repr(query) if query else '""'
+
         try:
             users, participants = await fetch_by_search(client, channel, query)
 
@@ -182,13 +216,20 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
 
             query_stats.append((display_q, len(users), new_count))
 
-            if progress_callback:
-                progress_callback(i + 1, len(queries), len(all_users))
+            # Recursive expansion: if we hit the cap and haven't exceeded
+            # max_depth, generate sub-queries by appending expansion chars.
+            if len(users) >= RESULT_CAP and depth < max_depth:
+                sub_queries = [(query + ch, depth + 1) for ch in EXPANSION_CHARS]
+                work_queue.extend(sub_queries)
+                total_planned += len(sub_queries)
 
         except Exception as e:
+            print(f"  Query {display_q}: error — {e}", file=sys.stderr)
             query_stats.append((display_q, 0, 0))
-            if progress_callback:
-                progress_callback(i + 1, len(queries), len(all_users))
+
+        completed += 1
+        if progress_callback:
+            progress_callback(completed, total_planned, len(all_users))
 
         await asyncio.sleep(delay)
 

@@ -8,7 +8,7 @@ If you hit a `FloodWaitError`:
 - The error message includes a `seconds` field telling you how long to wait
 - Telethon handles this automatically in most cases, but long waits (>60s) may indicate you should slow down your query rate
 - Increase the `delay` setting in your config
-- Consider using the `minimal` strategy (22 queries) instead of `full` (67 queries)
+- Consider using the `minimal` strategy (22 queries) instead of `full` (69 queries)
 
 ### Recommended batch sizes
 
@@ -44,7 +44,7 @@ We use MTProto because subscriber enumeration requires `GetParticipantsRequest`,
 
 ### Coverage estimates
 - **Minimal** (22 queries): Typically reaches 2,000-4,000 unique users
-- **Full** (67 queries): Typically reaches 5,000-8,000 unique users
+- **Full** (69 queries): Typically reaches 5,000-8,000 unique users
 - Neither achieves full coverage on channels with >10K subscribers
 
 ## Session File Security
