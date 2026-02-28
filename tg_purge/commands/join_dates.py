@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 from ..client import create_client, resolve_channel
 from ..config import load_config
 from ..enumeration import enumerate_subscribers
+from ..clustering import detect_spike_windows
 
 
 async def run(args):
@@ -50,6 +51,9 @@ async def run(args):
         if not join_dates:
             print("No join dates found! The API may not return dates for this channel type.")
             return
+
+        # Auto-detect spike windows
+        spike_windows = detect_spike_windows(join_dates)
 
         # ── Analysis ──────────────────────────────────────────────
         dates = sorted(join_dates.values())
@@ -152,6 +156,25 @@ async def run(args):
             print(f"\n  Largest 48-hour window: {max_window_start} ({max_window_count} joins)")
         else:
             print(f"  No 48-hour windows with 50+ joins found.")
+
+        # ── Auto-detected spike windows ─────────────────────────
+        if spike_windows:
+            print(f"\n{'─' * 80}")
+            print(f"AUTO-DETECTED SPIKE WINDOWS ({len(spike_windows)} found)")
+            print(f"{'─' * 80}")
+            for start, end in spike_windows:
+                window_users = sum(
+                    1 for d in dates if start <= d < end
+                )
+                duration = end - start
+                hours = duration.total_seconds() / 3600
+                print(f"  {start.strftime('%Y-%m-%d %H:%M')} — {end.strftime('%Y-%m-%d %H:%M')} UTC"
+                      f"  ({window_users} joins in {hours:.1f}h)")
+        else:
+            print(f"\n{'─' * 80}")
+            print("AUTO-DETECTED SPIKE WINDOWS")
+            print(f"{'─' * 80}")
+            print("  No statistically significant spikes detected (mean + 2σ threshold)")
 
         # ── Summary ───────────────────────────────────────────────
         total = len(join_dates)
