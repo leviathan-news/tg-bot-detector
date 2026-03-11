@@ -41,6 +41,19 @@ def _add_common_args(parser):
         default=None,
         help="Seconds between API queries (overrides config, default: 1.5).",
     )
+    parser.add_argument(
+        "--scoring",
+        choices=["heuristic", "ml", "hybrid"],
+        default="heuristic",
+        help="Scoring mode: 'heuristic' (default), 'ml' (requires model), "
+             "'hybrid' (show both).",
+    )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        default=False,
+        help="Show statistical summary (confidence intervals, bias estimate).",
+    )
 
 
 def build_parser():
@@ -214,6 +227,82 @@ def build_parser():
     p_reg_check.add_argument("--channel", default=None)
     p_reg_check.add_argument("--config", default=None)
 
+    # ── label ─────────────────────────────────────────────────
+    p_label = subparsers.add_parser(
+        "label",
+        help="Manage ML training labels for subscribers.",
+    )
+    _add_common_args(p_label)
+    p_label.add_argument(
+        "--bootstrap",
+        action="store_true",
+        default=False,
+        help="Enumerate channel, score users, and write weak heuristic labels to disk.",
+    )
+    p_label.add_argument(
+        "--strategy",
+        choices=["full", "minimal"],
+        default="full",
+        help="Search strategy when bootstrapping: 'full' or 'minimal'. Default: full.",
+    )
+
+    # ── ml ────────────────────────────────────────────────────
+    p_ml = subparsers.add_parser(
+        "ml",
+        help="Machine-learning model management: train, inspect, or export features.",
+    )
+    ml_sub = p_ml.add_subparsers(dest="ml_action", help="ML sub-actions")
+
+    # ml train
+    p_ml_train = ml_sub.add_parser(
+        "train",
+        help="Train a bot-detection model from labelled data.",
+    )
+    _add_common_args(p_ml_train)
+    p_ml_train.add_argument(
+        "--labels-path",
+        dest="labels_path",
+        default=None,
+        help="Path to labels JSON file (default: derived from --channel).",
+    )
+    p_ml_train.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        default="models",
+        help="Directory to write trained model and metadata (default: models).",
+    )
+
+    # ml info
+    p_ml_info = ml_sub.add_parser(
+        "info",
+        help="Print metadata for a saved model.",
+    )
+    p_ml_info.add_argument(
+        "--model-path",
+        dest="model_path",
+        default=None,
+        help="Path to a model metadata JSON file. "
+             "When omitted, the latest .json in models/ is used.",
+    )
+
+    # ml export-features
+    p_ml_export = ml_sub.add_parser(
+        "export-features",
+        help="Export feature vectors for subscribers to a JSON file.",
+    )
+    _add_common_args(p_ml_export)
+    p_ml_export.add_argument(
+        "--output",
+        required=True,
+        help="Output path for the feature vector JSON file.",
+    )
+    p_ml_export.add_argument(
+        "--strategy",
+        choices=["full", "minimal"],
+        default="full",
+        help="Search strategy: 'full' or 'minimal'. Default: full.",
+    )
+
     return parser
 
 
@@ -244,6 +333,12 @@ def main():
         asyncio.run(run(args))
     elif args.command == "registry":
         from .commands.registry import run
+        asyncio.run(run(args))
+    elif args.command == "label":
+        from .commands.label import run
+        asyncio.run(run(args))
+    elif args.command == "ml":
+        from .commands.ml_cmd import run
         asyncio.run(run(args))
     else:
         parser.print_help()
