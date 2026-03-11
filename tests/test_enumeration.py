@@ -232,6 +232,50 @@ class TestRecursiveExpansion:
         error_stats = [s for s in result["query_stats"] if s[1] == 0]
         assert len(error_stats) == 1
 
+    def test_result_contains_interrupted_false_on_normal_completion(self):
+        """Normal completion should set interrupted=False in the result dict."""
+        async def mock_fetch(client, channel, query, limit=200):
+            return _make_users(5, id_start=0), []
+
+        mock_client = AsyncMock()
+        mock_channel = MagicMock()
+
+        test_queries = ["a"]
+        with patch("tg_purge.enumeration.fetch_by_search", side_effect=mock_fetch), \
+             patch("tg_purge.enumeration.MINIMAL_QUERIES", test_queries):
+            result = asyncio.run(enumerate_subscribers(
+                mock_client, mock_channel,
+                strategy="minimal", delay=0, max_depth=0,
+            ))
+
+        assert result["interrupted"] is False
+
+    def test_max_queries_stops_early_not_interrupted(self):
+        """Stopping due to max_queries is a normal exit, not an interrupt."""
+        call_count = [0]
+
+        async def mock_fetch(client, channel, query, limit=200):
+            call_count[0] += 1
+            return _make_users(5, id_start=call_count[0] * 1000), []
+
+        mock_client = AsyncMock()
+        mock_channel = MagicMock()
+
+        test_queries = ["a", "b", "c", "d", "e"]
+        with patch("tg_purge.enumeration.fetch_by_search", side_effect=mock_fetch), \
+             patch("tg_purge.enumeration.MINIMAL_QUERIES", test_queries):
+            result = asyncio.run(enumerate_subscribers(
+                mock_client, mock_channel,
+                strategy="minimal", delay=0, max_depth=0,
+                max_queries=2,
+            ))
+
+        # Only 2 of 5 queries executed.
+        assert call_count[0] == 2
+        # Not flagged as interrupted — this was a planned stop.
+        assert result["interrupted"] is False
+
+
 class TestYieldTracker:
     """Unit tests for YieldTracker adaptive expansion helper."""
 

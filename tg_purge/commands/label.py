@@ -55,48 +55,23 @@ def _labels_path(channel: str) -> str:
     return str(Path("datasets") / slug / "labels.json")
 
 
-async def _run_bootstrap(args, config, channel_name: str) -> None:
-    """Enumerate, score, and persist weak heuristic labels for a channel.
+def _save_results(channel_name, all_users, join_dates, path, feature_cache=None):
+    """Score users, derive labels, and persist labels + features to disk.
 
-    Connects to Telegram via the Telethon client, enumerates subscribers using
-    the configured search strategy, scores each user, derives labels, saves the
-    label file, and prints statistics to stderr.
+    Factored out of _run_bootstrap so it can be called both on normal
+    completion and on KeyboardInterrupt (graceful save of partial results).
 
     Args:
-        args:         Parsed argparse namespace.
-        config:       Loaded Config object.
         channel_name: Resolved channel identifier string.
+        all_users:    Dict of user_id -> User objects collected so far.
+        join_dates:   Dict of user_id -> datetime for spike detection.
+        path:         Target path for labels.json.
+        feature_cache: Optional pre-computed dict of uid_str -> feature dict.
+                       If None, features are extracted here.
+
+    Returns:
+        Tuple of (labels dict, feature_cache dict) for stats printing.
     """
-    client = await create_client(config)
-    try:
-        channel = await resolve_channel(client, channel_name)
-
-        # Show a lightweight progress indicator while queries run.
-        def progress(i, total, found):
-            if i % 10 == 0:
-                print(
-                    f"  ...{i}/{total} queries, {found} users found",
-                    flush=True,
-                    file=sys.stderr,
-                )
-
-        print(f"\nBootstrapping labels for {channel_name!r}...", file=sys.stderr)
-        result = await enumerate_subscribers(
-            client,
-            channel,
-            strategy=getattr(args, "strategy", "full"),
-            delay=config.delay,
-            progress_callback=progress,
-            max_queries=getattr(args, "max_queries", 0),
-        )
-    finally:
-        # Always disconnect even if enumeration raises.
-        await client.disconnect()
-
-    all_users = result["users"]
-    join_dates = result["join_dates"]
-    print(f"Enumerated {len(all_users)} subscribers.", file=sys.stderr)
-
     # Auto-detect spike windows from join dates for spike_join scoring.
     spike_windows = []
     if len(join_dates) >= 10:
@@ -117,22 +92,23 @@ async def _run_bootstrap(args, config, channel_name: str) -> None:
         )
         scored[uid] = (score, _reasons)
 
-    # Extract feature vectors for every user (cached to disk for ml train).
-    print("Extracting feature vectors...", file=sys.stderr)
-    feature_cache = {}  # uid (str) -> feature dict
-    for uid, user in all_users.items():
-        features = extract_features(
-            user,
-            join_date=join_dates.get(uid),
-            spike_windows=spike_windows,
-        )
-        feature_cache[str(uid)] = features
+    # Extract feature vectors if not already provided (normal path computes
+    # them before this function; interrupt path may not have them yet).
+    if feature_cache is None:
+        print("Extracting feature vectors...", file=sys.stderr)
+        feature_cache = {}
+        for uid, user in all_users.items():
+            features = extract_features(
+                user,
+                join_date=join_dates.get(uid),
+                spike_windows=spike_windows,
+            )
+            feature_cache[str(uid)] = features
 
     # Derive weak labels from heuristic scores.
     labels = bootstrap_labels(all_users, scored)
 
     # Persist labels to disk.
-    path = _labels_path(channel_name)
     save_labels(labels, channel_name, path)
     print(f"Labels saved to {path}", file=sys.stderr)
 
@@ -154,10 +130,93 @@ async def _run_bootstrap(args, config, channel_name: str) -> None:
         pass
     print(f"Feature vectors saved to {features_path}", file=sys.stderr)
 
+    return labels, feature_cache
+
+
+async def _run_bootstrap(args, config, channel_name: str) -> None:
+    """Enumerate, score, and persist weak heuristic labels for a channel.
+
+    Connects to Telegram via the Telethon client, enumerates subscribers using
+    the configured search strategy, scores each user, derives labels, saves the
+    label file, and prints statistics to stderr.
+
+    If the run is interrupted (Ctrl+C), partial results collected so far are
+    scored, labeled, and saved before exiting — no work is lost.
+
+    Args:
+        args:         Parsed argparse namespace.
+        config:       Loaded Config object.
+        channel_name: Resolved channel identifier string.
+    """
+    client = await create_client(config)
+    try:
+        channel = await resolve_channel(client, channel_name)
+
+        # Show a lightweight progress indicator while queries run.
+        def progress(i, total, found):
+            if i % 10 == 0:
+                print(
+                    f"  ...{i}/{total} queries, {found} users found",
+                    flush=True,
+                    file=sys.stderr,
+                )
+
+        print(f"\nBootstrapping labels for {channel_name!r}...", file=sys.stderr)
+        # enumerate_subscribers catches KeyboardInterrupt internally and
+        # returns partial results with interrupted=True instead of raising.
+        result = await enumerate_subscribers(
+            client,
+            channel,
+            strategy=getattr(args, "strategy", "full"),
+            delay=config.delay,
+            progress_callback=progress,
+            max_queries=getattr(args, "max_queries", 0),
+        )
+    finally:
+        # Always disconnect even if enumeration raises.
+        await client.disconnect()
+
+    all_users = result["users"]
+    join_dates = result["join_dates"]
+    was_interrupted = result.get("interrupted", False)
+
+    if was_interrupted:
+        print(
+            f"\nInterrupted — saving {len(all_users)} partial results...",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Enumerated {len(all_users)} subscribers.", file=sys.stderr)
+
+    if not all_users:
+        print("No users collected. Nothing to save.", file=sys.stderr)
+        return
+
+    # Extract feature vectors for every user (cached to disk for ml train).
+    print("Extracting feature vectors...", file=sys.stderr)
+    feature_cache = {}  # uid (str) -> feature dict
+    spike_windows = []
+    if len(join_dates) >= 10:
+        spike_windows = detect_spike_windows(join_dates)
+    for uid, user in all_users.items():
+        features = extract_features(
+            user,
+            join_date=join_dates.get(uid),
+            spike_windows=spike_windows,
+        )
+        feature_cache[str(uid)] = features
+
+    # Save labels + features (factored into _save_results for reuse).
+    path = _labels_path(channel_name)
+    labels, _ = _save_results(
+        channel_name, all_users, join_dates, path, feature_cache=feature_cache,
+    )
+
     # Print aggregate statistics.
     stats = label_stats(labels)
+    status = " (PARTIAL — interrupted)" if was_interrupted else ""
     print(
-        f"\nLabel statistics:\n"
+        f"\nLabel statistics{status}:\n"
         f"  Total:      {stats['total']}\n"
         f"  Bot:        {stats['bot']}\n"
         f"  Human:      {stats['human']}\n"

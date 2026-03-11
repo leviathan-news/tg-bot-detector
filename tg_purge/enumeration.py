@@ -229,6 +229,7 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
     total_planned = len(work_queue)
     completed = 0
 
+    interrupted = False
     while work_queue:
         # Stop if we've hit the query budget.
         if max_queries > 0 and completed >= max_queries:
@@ -260,6 +261,14 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
                 work_queue.extend(sub_queries)
                 total_planned += len(sub_queries)
 
+        except KeyboardInterrupt:
+            # Ctrl+C during API call — stop enumeration, return partial results.
+            print(
+                f"\n  Interrupted at query {completed + 1}/{total_planned}.",
+                file=sys.stderr,
+            )
+            interrupted = True
+            break
         except Exception as e:
             print(f"  Query {display_q}: error — {e}", file=sys.stderr)
             query_stats.append((display_q, 0, 0))
@@ -268,11 +277,21 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
         if progress_callback:
             progress_callback(completed, total_planned, len(all_users))
 
-        await asyncio.sleep(delay)
+        try:
+            await asyncio.sleep(delay)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # Ctrl+C during sleep — stop enumeration, return partial results.
+            print(
+                f"\n  Interrupted at query {completed}/{total_planned}.",
+                file=sys.stderr,
+            )
+            interrupted = True
+            break
 
     return {
         "users": all_users,
         "participants": all_participants,
         "join_dates": join_dates,
         "query_stats": query_stats,
+        "interrupted": interrupted,
     }
