@@ -186,7 +186,8 @@ class YieldTracker:
 
 
 async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
-                                progress_callback=None, max_depth=3):
+                                progress_callback=None, max_depth=3,
+                                max_queries=0):
     """Enumerate channel subscribers using search-based sampling.
 
     When a query returns exactly RESULT_CAP (200) results, it likely has more
@@ -204,6 +205,8 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
             During recursive expansion, total_queries increases dynamically.
         max_depth: Maximum recursion depth for prefix expansion (0 disables).
             Default 3 matches the original squid-bot#77 spec (a -> aa -> aaa).
+        max_queries: Stop after this many API queries (0 = unlimited).
+            Useful for capping long-running enumerations on large channels.
 
     Returns:
         Dict with keys:
@@ -227,6 +230,9 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
     completed = 0
 
     while work_queue:
+        # Stop if we've hit the query budget.
+        if max_queries > 0 and completed >= max_queries:
+            break
         query, depth = work_queue.popleft()
         display_q = repr(query) if query else '""'
 

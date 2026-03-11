@@ -87,6 +87,7 @@ async def _run_bootstrap(args, config, channel_name: str) -> None:
             strategy=getattr(args, "strategy", "full"),
             delay=config.delay,
             progress_callback=progress,
+            max_queries=getattr(args, "max_queries", 0),
         )
     finally:
         # Always disconnect even if enumeration raises.

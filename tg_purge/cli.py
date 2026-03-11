@@ -245,6 +245,14 @@ def build_parser():
         default="full",
         help="Search strategy when bootstrapping: 'full' or 'minimal'. Default: full.",
     )
+    p_label.add_argument(
+        "--max-queries",
+        type=int,
+        default=0,
+        dest="max_queries",
+        help="Stop enumeration after this many API queries (0 = unlimited). "
+             "Useful for capping long runs on large channels.",
+    )
 
     # ── ml ────────────────────────────────────────────────────
     p_ml = subparsers.add_parser(
