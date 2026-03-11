@@ -52,6 +52,9 @@ class ScoringConfig:
     # Join date clustering
     spike_join: int = 2
 
+    # Cross-channel cohort membership
+    bot_cohort_member: int = 2
+
     # Positive signals (subtracted)
     premium: int = -2
     emoji_status: int = -1
@@ -77,7 +80,7 @@ def _status_type_name(status):
     return _STATUS_TYPE_NAMES.get(type(status).__name__, "unknown")
 
 
-def score_user(user, config=None, join_date=None, spike_windows=None):
+def score_user(user, config=None, join_date=None, spike_windows=None, **kwargs):
     """Score a Telethon User object for bot likelihood.
 
     Args:
@@ -88,6 +91,11 @@ def score_user(user, config=None, join_date=None, spike_windows=None):
         spike_windows: Optional list of (start_dt, end_dt) tuples defining
             time windows identified as bulk-subscription spikes. If join_date
             falls within any window, the spike_join penalty is applied.
+        **kwargs: Additional keyword arguments for forward-compatibility.
+            Recognised keys:
+              cohort_data (dict | None): Optional result from cross-channel
+                analysis.  If {"is_member": True} is passed the
+                bot_cohort_member penalty is applied.
 
     Returns:
         Tuple of (score: int, reasons: list[str]) where score >= 0.
@@ -181,6 +189,13 @@ def score_user(user, config=None, join_date=None, spike_windows=None):
                 score += config.spike_join
                 reasons.append(f"spike_join(+{config.spike_join})")
                 break  # Only penalize once even if windows overlap
+
+    # Cross-channel cohort: penalize users in suspicious coordinated groups.
+    # cohort_data is an optional dict from cross-channel analysis.
+    cohort_data = kwargs.get("cohort_data")
+    if cohort_data and cohort_data.get("is_member"):
+        score += config.bot_cohort_member
+        reasons.append(f"bot_cohort_member(+{config.bot_cohort_member})")
 
     # Positive signals (reduce score)
     if getattr(user, "premium", False):

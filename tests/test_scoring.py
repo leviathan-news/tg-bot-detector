@@ -423,3 +423,53 @@ class TestJoinDateScoring:
         assert score >= 5
         assert any("spike_join" in r for r in reasons)
         assert any("no_status_ever" in r for r in reasons)
+
+
+class TestCohortSignal:
+    """Test the bot_cohort_member scoring signal."""
+
+    def test_cohort_member_adds_penalty(self, clean_user):
+        """A user flagged as cohort member receives the bot_cohort_member penalty."""
+        score_no_cohort, _ = score_user(clean_user)
+        score, reasons = score_user(clean_user, cohort_data={"is_member": True})
+        assert any("bot_cohort_member" in r for r in reasons)
+        assert score == score_no_cohort + 2  # default bot_cohort_member weight = 2
+
+    def test_no_cohort_data_no_penalty(self, clean_user):
+        """Without cohort_data kwarg, no cohort signal is emitted."""
+        score, reasons = score_user(clean_user)
+        assert not any("bot_cohort_member" in r for r in reasons)
+
+    def test_cohort_not_member_no_penalty(self, clean_user):
+        """cohort_data with is_member=False adds no penalty."""
+        score_base, _ = score_user(clean_user)
+        score, reasons = score_user(clean_user, cohort_data={"is_member": False})
+        assert not any("bot_cohort_member" in r for r in reasons)
+        assert score == score_base
+
+    def test_kwargs_dont_break_existing(self, clean_user):
+        """Unexpected kwargs passed to score_user do not raise an error."""
+        score, reasons = score_user(clean_user, extra_kwarg="foo", another=42)
+        # Should behave exactly like a normal call with no extras
+        score_normal, reasons_normal = score_user(clean_user)
+        assert score == score_normal
+        assert reasons == reasons_normal
+
+    def test_cohort_member_weight_configurable(self, clean_user):
+        """bot_cohort_member weight is respected from ScoringConfig."""
+        config = ScoringConfig(bot_cohort_member=4)
+        score, reasons = score_user(clean_user, config=config, cohort_data={"is_member": True})
+        assert any("+4" in r for r in reasons)
+        assert score == 4
+
+    def test_cohort_member_stacks_with_other_signals(self, make_user):
+        """bot_cohort_member penalty stacks on top of profile signals."""
+        user = make_user(
+            status=None,   # +2 no_status_ever
+            photo=False,   # +1 no_photo
+        )
+        score, reasons = score_user(user, cohort_data={"is_member": True})
+        # 2 + 1 + 2 (cohort) + ... (other profile signals)
+        assert score >= 5
+        assert any("bot_cohort_member" in r for r in reasons)
+        assert any("no_status_ever" in r for r in reasons)
