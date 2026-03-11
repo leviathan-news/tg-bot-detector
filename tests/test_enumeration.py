@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from tg_purge.enumeration import (
     MINIMAL_QUERIES, FULL_QUERIES, EXPANSION_CHARS, RESULT_CAP,
-    enumerate_subscribers,
+    YieldTracker, enumerate_subscribers,
 )
 
 
@@ -231,6 +231,40 @@ class TestRecursiveExpansion:
         # Error query recorded in stats with 0 results
         error_stats = [s for s in result["query_stats"] if s[1] == 0]
         assert len(error_stats) == 1
+
+class TestYieldTracker:
+    """Unit tests for YieldTracker adaptive expansion helper."""
+
+    def test_record_and_should_expand_at_cap(self):
+        """A prefix recorded at exactly RESULT_CAP should be eligible for expansion."""
+        tracker = YieldTracker()
+        tracker.record("a", 200)
+        assert tracker.should_expand("a") is True
+
+    def test_should_not_expand_below_cap(self):
+        """A prefix recorded below RESULT_CAP should not be eligible for expansion."""
+        tracker = YieldTracker()
+        tracker.record("b", 50)
+        assert tracker.should_expand("b") is False
+
+    def test_unrecorded_prefix_should_not_expand(self):
+        """A prefix that was never recorded should not be eligible for expansion."""
+        tracker = YieldTracker()
+        assert tracker.should_expand("c") is False
+
+    def test_record_overwrites(self):
+        """Recording a second value for the same prefix replaces the first."""
+        tracker = YieldTracker()
+        tracker.record("a", 200)
+        tracker.record("a", 10)
+        # After overwrite the count is 10 — below cap, so no expansion.
+        assert tracker.should_expand("a") is False
+
+    def test_empty_tracker(self):
+        """A freshly created tracker should report no prefix as expandable."""
+        tracker = YieldTracker()
+        assert tracker.should_expand("x") is False
+
 
     def test_progress_callback_called(self):
         """Progress callback should be called for each query including expansions."""
