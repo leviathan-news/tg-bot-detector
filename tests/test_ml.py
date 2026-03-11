@@ -216,6 +216,7 @@ class TestPredict:
         assert len(results) == 1
         assert "probability" in results[0]
         assert "label" in results[0]
+        assert "heuristic_score" in results[0]
 
     def test_predict_probability_in_range(self, trained_model):
         """Each probability must be a float in [0.0, 1.0]."""
@@ -324,9 +325,11 @@ class TestModelMetadata:
         assert set(meta["feature_names"]) == set(FEATURE_KEYS)
 
     def test_metadata_has_n_samples(self, meta):
-        """Metadata must record the number of training samples (60 total here)."""
+        """Metadata must record per-class sample counts (30 bot + 30 human = 60)."""
         assert "n_samples" in meta
-        assert meta["n_samples"] == 60
+        assert isinstance(meta["n_samples"], dict)
+        assert meta["n_samples"]["bot"] == 30
+        assert meta["n_samples"]["human"] == 30
 
     def test_metadata_has_created_timestamp(self, meta):
         """Metadata must contain a 'created' field (ISO 8601 timestamp string)."""

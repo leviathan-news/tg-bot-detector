@@ -32,23 +32,7 @@ from ..client import create_client, resolve_channel
 from ..enumeration import enumerate_subscribers
 from ..scoring import score_user
 from ..labeling import bootstrap_labels, save_labels, load_labels, label_stats
-
-
-def _channel_slug(channel: str) -> str:
-    """Derive a filesystem-safe slug from a channel identifier.
-
-    Strips a leading '@' and replaces every character that is not alphanumeric
-    or an underscore with '_'.  Truncates to 64 characters to keep paths sane.
-
-    Args:
-        channel: Channel identifier string, e.g. "@leviathan_news" or "12345".
-
-    Returns:
-        A safe slug string, e.g. "leviathan_news".
-    """
-    slug = channel.lstrip("@")
-    slug = "".join(c if c.isalnum() or c == "_" else "_" for c in slug)
-    return slug[:64]
+from ..utils import channel_slug as _channel_slug
 
 
 def _labels_path(channel: str) -> str:

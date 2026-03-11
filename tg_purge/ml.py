@@ -31,6 +31,8 @@ import stat
 import datetime
 from typing import List, Dict, Optional, Any, Tuple
 
+from .utils import channel_slug as _safe_channel_slug
+
 
 # ---------------------------------------------------------------------------
 # Availability probe
@@ -150,22 +152,6 @@ def _make_output_dir(output_dir: str) -> None:
         pass
 
 
-def _safe_channel_slug(channel: Optional[str]) -> str:
-    """
-    Normalise a channel name into a filesystem-safe slug.
-
-    Strips leading '@', replaces non-alphanumeric characters with '_', and
-    truncates to 64 characters to keep filenames sensible.
-
-    Returns an empty string when channel is None or blank.
-    """
-    if not channel:
-        return ""
-    slug = channel.lstrip("@")
-    # Replace any character that is not alphanumeric or '_' with '_'.
-    slug = "".join(c if c.isalnum() or c == "_" else "_" for c in slug)
-    return slug[:64]
-
 
 def _build_model_filename(output_dir: str, algorithm: str, channel: Optional[str]) -> str:
     """
@@ -255,8 +241,8 @@ def _evaluate_model(model, name: str, X_test, y_test) -> Dict[str, float]:
     """
     Compute F1, precision, recall, and AUC-ROC on the test split.
 
-    Uses macro-averaged F1/precision/recall so both classes contribute
-    equally regardless of their size.
+    Uses binary F1/precision/recall (positive class = bot = 1), which is
+    appropriate for our binary classification task.
 
     Args:
         model: Fitted classifier.
@@ -466,11 +452,16 @@ def train_model(
     _save_model(best_model, best_name, model_path)
     _set_secure_permissions(model_path)
 
+    # Per-class sample counts for the metadata (spec requires {"bot": N, "human": M}).
+    import numpy as np  # already imported above, but keep this block self-contained
+    n_bot = int(np.sum(y == 1))
+    n_human = int(np.sum(y == 0))
+
     metadata: Dict[str, Any] = {
         "version":       1,
-        "trained_on":    datetime.date.today().isoformat(),
+        "trained_on":    [channel] if channel else [],
         "algorithm":     best_name,
-        "n_samples":     n_total,
+        "n_samples":     {"bot": n_bot, "human": n_human},
         "metrics":       best_metrics,
         "feature_names": feature_names,
         "threshold":     0.5,
@@ -558,9 +549,15 @@ def predict(
 
     # --- Apply threshold to assign labels ---
     results: List[Dict[str, Any]] = []
-    for prob in probabilities:
+    for i, prob in enumerate(probabilities):
         label = "bot" if float(prob) >= threshold else "human"
-        results.append({"probability": float(prob), "label": label})
+        # Extract heuristic_score from the feature vector if present.
+        heuristic_score = features[i].get("heuristic_score", 0.0) if i < len(features) else 0.0
+        results.append({
+            "probability": float(prob),
+            "label": label,
+            "heuristic_score": heuristic_score,
+        })
     return results
 
 

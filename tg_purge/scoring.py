@@ -80,7 +80,7 @@ def _status_type_name(status):
     return _STATUS_TYPE_NAMES.get(type(status).__name__, "unknown")
 
 
-def score_user(user, config=None, join_date=None, spike_windows=None, **kwargs):
+def score_user(user, config=None, join_date=None, spike_windows=None, cohort_data=None, **kwargs):
     """Score a Telethon User object for bot likelihood.
 
     Args:
@@ -191,8 +191,9 @@ def score_user(user, config=None, join_date=None, spike_windows=None, **kwargs):
                 break  # Only penalize once even if windows overlap
 
     # Cross-channel cohort: penalize users in suspicious coordinated groups.
-    # cohort_data is an optional dict from cross-channel analysis.
-    cohort_data = kwargs.get("cohort_data")
+    # cohort_data is an optional dict from cross-channel analysis containing
+    # at minimum {"is_member": bool}. Passed explicitly as a keyword argument
+    # so typos (e.g. cohart_data) raise TypeError instead of being silently ignored.
     if cohort_data and cohort_data.get("is_member"):
         score += config.bot_cohort_member
         reasons.append(f"bot_cohort_member(+{config.bot_cohort_member})")

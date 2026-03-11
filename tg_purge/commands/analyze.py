@@ -24,10 +24,21 @@ from ..formatters import (
     print_threshold_analysis,
     print_comparison_table,
 )
+from ..statistics import estimate_bot_rate, sample_quality_report, format_stats_summary
 
 
 async def run(args):
     """Execute the analyze command."""
+    # Warn if --scoring ml/hybrid was passed — inference path is not yet wired.
+    scoring_mode = getattr(args, "scoring", "heuristic")
+    if scoring_mode in ("ml", "hybrid"):
+        import sys
+        print(
+            f"WARNING: --scoring {scoring_mode} is not yet implemented. "
+            "Falling back to heuristic scoring.",
+            file=sys.stderr,
+        )
+
     config = load_config(getattr(args, "config", None))
     if args.session_path:
         config.session_path = args.session_path
@@ -87,6 +98,7 @@ async def run(args):
         queries = FULL_QUERIES if args.strategy == "full" else MINIMAL_QUERIES
         search_users = {}  # id -> (user, source_query)
         search_join_dates = {}
+        query_stats = []  # (query, result_count, new_count) for --stats
 
         for query in queries:
             display_q = repr(query) if query else '""'
@@ -107,6 +119,7 @@ async def run(args):
 
                 hit_cap = " >> HIT 200 CAP" if len(users) >= 200 else ""
                 print(f"  Search {display_q:6s}: {len(users):3d} results, {len(new_users):3d} new{hit_cap}")
+                query_stats.append((display_q, len(users), len(new_users)))
 
             except Exception as e:
                 print(f"  Search {display_q:6s}: ERROR \u2014 {e}")
@@ -196,6 +209,17 @@ async def run(args):
             print("  - The 200-result cap per query means large pools are only partially sampled")
             print("  - 'no_status_ever' is the strongest bot signal but may include")
             print("    privacy-conscious humans who hide their online status")
+
+        # ── Statistical summary (--stats) ────────────────────────
+        if getattr(args, "stats", False) and total > 0:
+            bot_rate = estimate_bot_rate(
+                all_scored, sub_count or 0, threshold=3
+            )
+            quality = sample_quality_report(
+                total, sub_count or 0, query_stats
+            )
+            print(f"\n{'─' * 80}")
+            print(format_stats_summary(bot_rate, quality))
 
     finally:
         await client.disconnect()

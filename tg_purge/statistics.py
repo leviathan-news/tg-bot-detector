@@ -259,7 +259,7 @@ def format_stats_summary(bot_rate_result: dict, quality_report: dict) -> str:
         "=== Statistical Bot Rate Estimate ===",
         f"  Flagged:      {flagged}/{sample} sampled  ({pe:.1f}%)",
         f"  95% CI:       [{ci_lo:.1f}%, {ci_hi:.1f}%]  (±{moe:.1f}%)",
-        f"  Total channel:{total_sub:>10,} subscribers",
+        f"  Total channel: {total_sub:>9,} subscribers",
         "",
         "=== Sample Quality ===",
         f"  Coverage:     {coverage:.1f}% of channel enumerated",

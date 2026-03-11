@@ -22,29 +22,16 @@ All network operations would require a connected Telethon client (relevant for
 future sub-actions).  The current stubs do not open a Telegram connection.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 from ..ml import ml_available, load_model_metadata
-
-
-def _channel_slug(channel: str) -> str:
-    """Derive a filesystem-safe slug from a channel identifier.
-
-    Strips a leading '@' and replaces every non-alphanumeric, non-underscore
-    character with '_'.  Truncates to 64 characters.
-
-    Args:
-        channel: Channel identifier string, e.g. "@leviathan_news".
-
-    Returns:
-        Slug string safe to use as a directory name component.
-    """
-    slug = channel.lstrip("@")
-    slug = "".join(c if c.isalnum() or c == "_" else "_" for c in slug)
-    return slug[:64]
+from ..utils import channel_slug as _channel_slug
 
 
 def _default_labels_path(channel: str) -> str:
@@ -64,7 +51,7 @@ def _default_labels_path(channel: str) -> str:
     return str(Path("datasets") / slug / "labels.json")
 
 
-def _find_latest_model_json(models_dir: str = "models") -> str | None:
+def _find_latest_model_json(models_dir: str = "models") -> Optional[str]:
     """Search models_dir for the most recently modified .json file.
 
     JSON files in the models directory are metadata files produced by
