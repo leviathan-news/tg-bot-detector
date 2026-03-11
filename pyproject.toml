@@ -15,6 +15,13 @@ dependencies = [
 
 [project.optional-dependencies]
 toml = ["tomli>=1.0; python_version < '3.11'"]
+ml = [
+    "scikit-learn>=1.3",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "lightgbm>=4.0",
+    "xgboost>=2.0",
+]
 
 [project.scripts]
 tg-purge = "tg_purge.cli:main"
