@@ -24,12 +24,17 @@ Security
   characters with '_', so it is safe to use as a filesystem path component.
 """
 
+import json
+import os
+import stat
 import sys
 from pathlib import Path
 
 from ..config import load_config
 from ..client import create_client, resolve_channel
+from ..clustering import detect_spike_windows
 from ..enumeration import enumerate_subscribers
+from ..features import extract_features
 from ..scoring import score_user
 from ..labeling import bootstrap_labels, save_labels, load_labels, label_stats
 from ..utils import channel_slug as _channel_slug
@@ -91,22 +96,62 @@ async def _run_bootstrap(args, config, channel_name: str) -> None:
     join_dates = result["join_dates"]
     print(f"Enumerated {len(all_users)} subscribers.", file=sys.stderr)
 
+    # Auto-detect spike windows from join dates for spike_join scoring.
+    spike_windows = []
+    if len(join_dates) >= 10:
+        spike_windows = detect_spike_windows(join_dates)
+        if spike_windows:
+            print(
+                f"Auto-detected {len(spike_windows)} spike window(s).",
+                file=sys.stderr,
+            )
+
     # Score every user with the default heuristic config.
     scored = {}
     for uid, user in all_users.items():
         score, _reasons = score_user(
             user,
             join_date=join_dates.get(uid),
+            spike_windows=spike_windows,
         )
         scored[uid] = (score, _reasons)
+
+    # Extract feature vectors for every user (cached to disk for ml train).
+    print("Extracting feature vectors...", file=sys.stderr)
+    feature_cache = {}  # uid (str) -> feature dict
+    for uid, user in all_users.items():
+        features = extract_features(
+            user,
+            join_date=join_dates.get(uid),
+            spike_windows=spike_windows,
+        )
+        feature_cache[str(uid)] = features
 
     # Derive weak labels from heuristic scores.
     labels = bootstrap_labels(all_users, scored)
 
-    # Persist to disk.
+    # Persist labels to disk.
     path = _labels_path(channel_name)
     save_labels(labels, channel_name, path)
     print(f"Labels saved to {path}", file=sys.stderr)
+
+    # Persist feature vectors alongside labels (same directory).
+    # This file is loaded by 'ml train' to avoid re-enumerating.
+    features_path = str(Path(path).parent / "features.json")
+    features_dir = Path(features_path).parent
+    features_dir.mkdir(parents=True, exist_ok=True)
+    with open(features_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {"channel": channel_name, "features": feature_cache},
+            fh,
+            indent=2,
+        )
+    # Restrict permissions — feature vectors contain heuristic scores tied to user IDs.
+    try:
+        os.chmod(features_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+    print(f"Feature vectors saved to {features_path}", file=sys.stderr)
 
     # Print aggregate statistics.
     stats = label_stats(labels)

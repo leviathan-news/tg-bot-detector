@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from ..ml import ml_available, load_model_metadata
+from ..ml import ml_available, load_model_metadata, train_model
 from ..utils import channel_slug as _channel_slug
 
 
@@ -127,19 +127,81 @@ def _run_train(args) -> None:
         )
         sys.exit(1)
 
-    # Load labels to count them and show the user what is available.
+    # Load labels.
     with open(labels_file, "r", encoding="utf-8") as fh:
         raw = json.load(fh)
-    n_labels = len(raw.get("labels", {}))
+    labels_data = raw.get("labels", {})
+    channel_name = raw.get("channel", getattr(args, "channel", None))
 
-    output_dir = getattr(args, "output_dir", "models")
+    # Look for cached feature vectors (produced by label --bootstrap).
+    features_path = str(labels_file.parent / "features.json")
+    if not Path(features_path).exists():
+        print(
+            f"Feature vectors not found: {features_path}\n"
+            "Re-run 'tg-purge label --channel <channel> --bootstrap' to generate them.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
+    with open(features_path, "r", encoding="utf-8") as fh:
+        features_raw = json.load(fh)
+    feature_cache = features_raw.get("features", {})
+
+    # Align features and labels — only include users with both a feature vector
+    # and a bot/human label (skip "unlabeled").
+    train_features = []
+    train_labels = []
+    for uid_str, label_info in labels_data.items():
+        label = label_info.get("label", "unlabeled")
+        if label not in ("bot", "human"):
+            continue
+        if uid_str not in feature_cache:
+            continue
+        train_features.append(feature_cache[uid_str])
+        train_labels.append(label)
+
+    n_bot = sum(1 for l in train_labels if l == "bot")
+    n_human = sum(1 for l in train_labels if l == "human")
     print(
-        f"Labels file:  {labels_path} ({n_labels} entries)\n"
-        f"Output dir:   {output_dir}\n\n"
-        "Training requires cached feature vectors (not yet implemented).\n"
-        "Use 'tg-purge ml export-features --channel <channel> --output <path>'\n"
-        "to generate feature vectors, then re-run 'ml train'.",
+        f"Labels file:   {labels_path} ({len(labels_data)} entries)\n"
+        f"Features file: {features_path} ({len(feature_cache)} vectors)\n"
+        f"Training set:  {len(train_features)} samples ({n_bot} bot, {n_human} human)",
+        file=sys.stderr,
+    )
+
+    if len(train_features) < 10:
+        print("Error: fewer than 10 labeled samples. Need more data.", file=sys.stderr)
+        sys.exit(1)
+    if n_bot == 0 or n_human == 0:
+        print("Error: both bot and human labels are required.", file=sys.stderr)
+        sys.exit(1)
+
+    # Train the model.
+    output_dir = getattr(args, "output_dir", "models")
+    print(f"\nTraining...", file=sys.stderr)
+    result = train_model(
+        train_features,
+        train_labels,
+        output_dir=output_dir,
+        channel=channel_name,
+    )
+
+    if not result.get("success"):
+        print(f"Training failed: {result.get('error', 'unknown')}", file=sys.stderr)
+        sys.exit(1)
+
+    # Print results.
+    metrics = result["metrics"]
+    print(
+        f"\nTraining complete!\n"
+        f"  Algorithm:  {result['algorithm']}\n"
+        f"  F1:         {metrics['f1']:.3f}\n"
+        f"  Precision:  {metrics['precision']:.3f}\n"
+        f"  Recall:     {metrics['recall']:.3f}\n"
+        f"  AUC-ROC:    {metrics['auc_roc']:.3f}\n"
+        f"\n"
+        f"  Model:      {result['model_file']}\n"
+        f"  Metadata:   {result['metadata_file']}",
         file=sys.stderr,
     )
 
