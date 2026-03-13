@@ -74,6 +74,12 @@ FEATURE_KEYS: List[str] = [
     "name_digit_ratio",   # Fraction of digit characters in first_name [0, 1]
     "script_count",       # Number of distinct script families in first_name
                           # (Latin, Cyrillic, Arabic, CJK — max 4)
+    "name_emoji_count",   # Number of emoji codepoints in first_name+last_name
+                          # Airdrop farmers average 3-6 emoji; real users 0-1
+    "name_has_crypto_kw", # 1 if name contains known crypto/airdrop project keywords
+                          # (Meshchain, SEED, Drops, DeSpeed, VIA, PadTON, etc.)
+    "name_username_sim",  # Jaccard similarity between name tokens and username tokens
+                          # Mismatch bots: "Felipe" with @AnnPerez_720233 → sim≈0
 
     # --- Activity status (one-hot encoded) ---
     "status_empty",       # Never seen / no status info
@@ -150,16 +156,101 @@ def _extract_account_flags(user) -> Dict[str, float]:
     }
 
 
-def _extract_profile_features(user) -> Dict[str, float]:
-    """Extract profile completeness features.
+def _count_emoji(text: str) -> int:
+    """Count emoji codepoints in a string.
 
-    Analyses the first_name string for length, digit ratio, and the number
-    of distinct Unicode script families present (Latin, Cyrillic, Arabic, CJK).
+    Uses Unicode emoji ranges to detect emoji characters. Counts individual
+    codepoints, not grapheme clusters (so a flag emoji = 2, skin tone = 2).
+    This is intentional — airdrop farmers pack many emoji codepoints.
+    """
+    count = 0
+    for ch in text:
+        cp = ord(ch)
+        # Common emoji ranges:
+        # - Emoticons: U+1F600-U+1F64F
+        # - Misc Symbols: U+1F300-U+1F5FF
+        # - Transport/Map: U+1F680-U+1F6FF
+        # - Supplemental: U+1F900-U+1F9FF
+        # - Symbols/Pictographs: U+1FA00-U+1FAFF
+        # - Dingbats: U+2700-U+27BF
+        # - Misc Symbols: U+2600-U+26FF
+        # - Variation selectors and ZWJ are not counted (they're modifiers).
+        if (0x1F300 <= cp <= 0x1F9FF or
+                0x1FA00 <= cp <= 0x1FAFF or
+                0x2600 <= cp <= 0x27BF or
+                0x2300 <= cp <= 0x23FF or
+                0xFE00 <= cp <= 0xFE0F or
+                0x200D == cp):
+            count += 1
+    return count
+
+
+# Known crypto/airdrop project keywords found in bot farm names.
+# Lowercase for case-insensitive matching. Ordered by frequency
+# observed in review sessions.
+_CRYPTO_KEYWORDS = {
+    "meshchain", "seed", "drops", "despeed", "via", "padton",
+    "sparkchain", "yescoiner", "bits", "airdrop", "dnnl",
+    "seraph", "crypto", "defi", "nft", "web3", "blockchain",
+    "token", "mining", "staking", "swap", "yield", "dao",
+    "metaverse", "gamefi",
+}
+
+
+def _has_crypto_keywords(text: str) -> bool:
+    """Check if text contains known crypto/airdrop project keywords."""
+    lower = text.lower()
+    return any(kw in lower for kw in _CRYPTO_KEYWORDS)
+
+
+def _name_username_similarity(first_name: str, last_name: str,
+                              username: str) -> float:
+    """Compute fraction of name tokens found as substrings in the username.
+
+    Extracts lowercase alpha tokens (2+ chars) from the display name
+    (first + last), then checks how many appear as substrings in the
+    lowered username. Returns matched_count / total_name_tokens.
+
+    This handles concatenated usernames like "alicesmith" where regex
+    tokenization would yield a single token that doesn't match
+    {"alice", "smith"}.
+
+    Bot farms often generate usernames from a different name pool than
+    the display name, yielding similarity ≈ 0. Real users typically have
+    username matching or derived from their real name.
+
+    Returns 0.0 if either name or username is empty (no signal).
+    """
+    if not username or not first_name:
+        return 0.0
+
+    # Tokenize name: split on whitespace and non-alpha chars.
+    name_text = f"{first_name} {last_name or ''}".strip().lower()
+    name_tokens = set(re.findall(r"[a-z]{2,}", name_text))
+
+    if not name_tokens:
+        return 0.0
+
+    # Check how many name tokens appear as substrings in the username.
+    # Handles concatenated usernames like "alicesmith" → matches "alice" + "smith".
+    username_lower = username.lower()
+    matched = sum(1 for tok in name_tokens if tok in username_lower)
+    return matched / len(name_tokens)
+
+
+def _extract_profile_features(user) -> Dict[str, float]:
+    """Extract profile completeness and name analysis features.
+
+    Analyses the first_name string for length, digit ratio, script families,
+    emoji count, crypto keywords, and name/username similarity.
 
     Returns keys: has_photo, has_username, has_last_name, first_name_length,
-    name_digit_ratio, script_count.
+    name_digit_ratio, script_count, name_emoji_count, name_has_crypto_kw,
+    name_username_sim.
     """
     first: str = user.first_name or ""
+    last: str = getattr(user, "last_name", None) or ""
+    username: str = getattr(user, "username", None) or ""
 
     # --- Digit ratio ---
     # Guard against ZeroDivisionError on empty first name.
@@ -178,13 +269,29 @@ def _extract_profile_features(user) -> Dict[str, float]:
     has_cjk      = bool(re.search(r"[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]", first))
     script_count = sum([has_latin, has_cyrillic, has_arabic, has_cjk])
 
+    # --- Emoji count across full display name ---
+    # Airdrop farmers typically have 3-6 emoji in their name; real users 0-1.
+    full_name = f"{first} {last}".strip()
+    emoji_count = _count_emoji(full_name)
+
+    # --- Crypto/airdrop keyword detection ---
+    has_crypto = _has_crypto_keywords(full_name)
+
+    # --- Name/username similarity ---
+    # Bot farms generate display names and usernames from different pools.
+    # Real users' usernames typically relate to their display name.
+    sim = _name_username_similarity(first, last, username)
+
     return {
-        "has_photo":       float(bool(getattr(user, "photo", None))),
-        "has_username":    float(bool(getattr(user, "username", None))),
-        "has_last_name":   float(bool(getattr(user, "last_name", None))),
+        "has_photo":         float(bool(getattr(user, "photo", None))),
+        "has_username":      float(bool(getattr(user, "username", None))),
+        "has_last_name":     float(bool(last)),
         "first_name_length": float(len(first)),
         "name_digit_ratio":  digit_ratio,
         "script_count":      float(script_count),
+        "name_emoji_count":  float(emoji_count),
+        "name_has_crypto_kw": float(has_crypto),
+        "name_username_sim": sim,
     }
 
 

@@ -41,12 +41,15 @@ from pathlib import Path
 # Add project root to path so tg_purge is importable.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tg_purge.features import FEATURE_KEYS
+from tg_purge.features import (
+    FEATURE_KEYS, _count_emoji, _has_crypto_keywords,
+    _name_username_similarity,
+)
 from tg_purge.ml import train_model, ml_available
 
 
 def raw_to_feature_vector(raw: dict) -> dict:
-    """Convert raw validation fields to a 47-feature ML vector.
+    """Convert raw validation fields to a 50-feature ML vector.
 
     Maps the flat dict from validate_new_features.py's extract_all_fields()
     to the FEATURE_KEYS schema used by features.py's extract_features().
@@ -131,6 +134,19 @@ def raw_to_feature_vector(raw: dict) -> dict:
         "first_name_length":  float(len(first_name)),
         "name_digit_ratio":   digit_ratio,
         "script_count":       float(script_count),
+
+        # Name analysis — emoji, crypto keywords, name/username similarity.
+        "name_emoji_count":   float(_count_emoji(
+            first_name + " " + (raw.get("last_name", "") or "")
+        )),
+        "name_has_crypto_kw": float(_has_crypto_keywords(
+            first_name + " " + (raw.get("last_name", "") or "")
+        )),
+        "name_username_sim":  _name_username_similarity(
+            first_name,
+            raw.get("last_name", "") or "",
+            raw.get("username", "") or "",
+        ),
 
         # Activity status (one-hot)
         "status_empty":       status_empty,

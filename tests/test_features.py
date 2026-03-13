@@ -705,6 +705,93 @@ class TestCohortFeatures:
 
 
 # ---------------------------------------------------------------------------
+# TestNameAnalysisFeatures
+# ---------------------------------------------------------------------------
+
+class TestNameAnalysisFeatures:
+    """Tests for name_emoji_count, name_has_crypto_kw, name_username_sim."""
+
+    def test_no_emoji_count_zero(self, make_user):
+        """Normal name without emoji should have count 0."""
+        user = make_user(first_name="Alice", last_name="Smith")
+        f = extract_features(user)
+        assert f["name_emoji_count"] == 0.0
+
+    def test_emoji_counted_in_name(self, make_user):
+        """Emoji in first_name should be counted."""
+        user = make_user(first_name="VIA Drops\U0001f4a7 SEED\U0001f331")
+        f = extract_features(user)
+        assert f["name_emoji_count"] >= 2.0
+
+    def test_emoji_counted_in_last_name(self, make_user):
+        """Emoji in last_name are also counted."""
+        user = make_user(first_name="Dasha", last_name="Dasha \U0001f408\u200d\u2b1b")
+        f = extract_features(user)
+        assert f["name_emoji_count"] >= 1.0
+
+    def test_no_crypto_keyword_default(self, make_user):
+        """Normal name without crypto keywords should be 0."""
+        user = make_user(first_name="Bob", last_name="Jones")
+        f = extract_features(user)
+        assert f["name_has_crypto_kw"] == 0.0
+
+    def test_crypto_keyword_meshchain(self, make_user):
+        """Name containing 'Meshchain' triggers crypto keyword flag."""
+        user = make_user(first_name="VIA Seraph Meshchain.Ai")
+        f = extract_features(user)
+        assert f["name_has_crypto_kw"] == 1.0
+
+    def test_crypto_keyword_seed(self, make_user):
+        """Name containing 'SEED' triggers crypto keyword flag."""
+        user = make_user(first_name="Yori SEED Yescoiner")
+        f = extract_features(user)
+        assert f["name_has_crypto_kw"] == 1.0
+
+    def test_crypto_keyword_case_insensitive(self, make_user):
+        """Crypto keyword detection is case-insensitive."""
+        user = make_user(first_name="john DeSpEeD fan")
+        f = extract_features(user)
+        assert f["name_has_crypto_kw"] == 1.0
+
+    def test_crypto_keyword_airdrop(self, make_user):
+        """'airdrop' in name triggers the flag."""
+        user = make_user(first_name="Free Airdrop Hunter")
+        f = extract_features(user)
+        assert f["name_has_crypto_kw"] == 1.0
+
+    def test_username_sim_matching_name(self, make_user):
+        """Username derived from real name should have high similarity."""
+        user = make_user(first_name="Alice", last_name="Smith", username="alicesmith")
+        f = extract_features(user)
+        assert f["name_username_sim"] > 0.5
+
+    def test_username_sim_mismatched(self, make_user):
+        """Mismatched name and username (bot pattern) should have low similarity."""
+        user = make_user(first_name="Felipe", username="AnnPerez_720233")
+        f = extract_features(user)
+        assert f["name_username_sim"] < 0.2
+
+    def test_username_sim_no_username(self, make_user):
+        """No username should return 0 similarity (no signal)."""
+        user = make_user(first_name="Test", username=None)
+        f = extract_features(user)
+        assert f["name_username_sim"] == 0.0
+
+    def test_username_sim_no_name(self, make_user):
+        """Empty first name should return 0 similarity."""
+        user = make_user(first_name="", username="testuser")
+        f = extract_features(user)
+        assert f["name_username_sim"] == 0.0
+
+    def test_username_sim_partial_match(self, make_user):
+        """Partial overlap should produce intermediate similarity."""
+        user = make_user(first_name="John", last_name="Doe", username="johncrypto")
+        f = extract_features(user)
+        # "john" matches, "doe" doesn't match "crypto" → partial sim
+        assert 0.0 < f["name_username_sim"] < 1.0
+
+
+# ---------------------------------------------------------------------------
 # TestFeatureCompleteness
 # ---------------------------------------------------------------------------
 
@@ -719,6 +806,7 @@ class TestFeatureCompleteness:
         # Profile
         "has_photo", "has_username", "has_last_name",
         "first_name_length", "name_digit_ratio", "script_count",
+        "name_emoji_count", "name_has_crypto_kw", "name_username_sim",
         # Activity status (one-hot)
         "status_empty", "status_online", "status_recently",
         "status_last_week", "status_last_month", "status_offline",
@@ -762,13 +850,13 @@ class TestFeatureCompleteness:
     def test_feature_keys_has_no_duplicates(self):
         assert len(FEATURE_KEYS) == len(set(FEATURE_KEYS))
 
-    def test_feature_count_is_47(self, make_user):
+    def test_feature_count_is_50(self, make_user):
         user = make_user()
         f = extract_features(user)
-        assert len(f) == 47
+        assert len(f) == 50
 
-    def test_feature_keys_length_is_47(self):
-        assert len(FEATURE_KEYS) == 47
+    def test_feature_keys_length_is_50(self):
+        assert len(FEATURE_KEYS) == 50
 
     def test_all_keys_present_for_deleted_user(self, deleted_user):
         # Deleted users must still produce a complete feature vector.
