@@ -205,6 +205,158 @@ def raw_to_feature_vector(raw: dict) -> dict:
     return features
 
 
+def _exit_profile_to_raw(profile: dict, heuristic_score: int) -> dict:
+    """Convert an exit monitor JSONL profile to the raw format expected by
+    raw_to_feature_vector().
+
+    The exit monitor (monitor_leaves.py) serializes Telethon User objects with
+    different key names than validate_new_features.py. This function maps
+    between the two schemas so departed users from live monitoring can be
+    ingested into the training pipeline as confirmed bot ground truth.
+
+    Field mapping:
+      JSONL profile key       → raw_to_feature_vector() expected key
+      ─────────────────────────────────────────────────────────────────
+      id                      → user_id
+      photo (bool)            → has_photo
+      username (str|null)     → has_username, username
+      first_name              → first_name
+      last_name               → last_name, has_last_name
+      status_type             → status_type
+      deleted                 → is_deleted
+      bot                     → is_bot_api
+      verified                → is_verified
+      restricted              → is_restricted
+      scam                    → is_scam
+      fake                    → is_fake
+      premium                 → is_premium
+      emoji_status (bool)     → has_emoji_status
+      photo_meta.dc_id        → photo_dc_id
+      photo_meta.has_video    → photo_has_video
+      color (bool)            → has_custom_color
+      profile_color (bool)    → has_profile_color
+      usernames_count         → usernames_count
+      stories_max_id          → has_stories
+      contact_require_premium → has_contact_require_premium
+
+    Args:
+        profile: Dict from the "profile" field of an exit monitor JSONL record.
+        heuristic_score: Heuristic score from the JSONL record.
+
+    Returns:
+        Dict compatible with raw_to_feature_vector().
+    """
+    photo_meta = profile.get("photo_meta") or {}
+
+    return {
+        "user_id": profile.get("id"),
+        "first_name": profile.get("first_name") or "",
+        "last_name": profile.get("last_name") or "",
+        "username": profile.get("username") or "",
+        "has_photo": bool(profile.get("photo", False)),
+        "has_username": bool(profile.get("username")),
+        "has_last_name": bool(profile.get("last_name")),
+        "is_deleted": bool(profile.get("deleted", False)),
+        "is_bot_api": bool(profile.get("bot", False)),
+        "is_scam": bool(profile.get("scam", False)),
+        "is_fake": bool(profile.get("fake", False)),
+        "is_restricted": bool(profile.get("restricted", False)),
+        "is_premium": bool(profile.get("premium", False)),
+        "is_verified": bool(profile.get("verified", False)),
+        "has_emoji_status": bool(profile.get("emoji_status", False)),
+        "status_type": profile.get("status_type") or "None",
+        "photo_dc_id": photo_meta.get("dc_id", 0) or 0,
+        "photo_has_video": bool(photo_meta.get("has_video", False)),
+        "has_custom_color": bool(profile.get("color", False)),
+        "has_profile_color": bool(profile.get("profile_color", False)),
+        "usernames_count": profile.get("usernames_count", 0) or 0,
+        "has_stories": bool((profile.get("stories_max_id") or 0) > 0),
+        "stories_unavailable": False,  # Not tracked in exit monitor.
+        "has_contact_require_premium": bool(
+            profile.get("contact_require_premium", False)
+        ),
+        "has_lang_code": False,  # Not tracked in exit monitor.
+        "has_paid_messages": False,  # Not tracked in exit monitor.
+        "heuristic_score": heuristic_score or 0,
+    }
+
+
+def load_exit_data(paths: list) -> list:
+    """Load confirmed bot departures from exit monitor JSONL files.
+
+    Reads one or more JSONL files produced by monitor_leaves.py. Each line
+    is a departure event with a full profile snapshot and heuristic score.
+    Profiles are converted to the raw dict format expected by
+    raw_to_feature_vector().
+
+    Filters out:
+      - Records with no profile (user was gone before snapshot)
+      - Deleted accounts (no useful profile features)
+      - Duplicate user IDs (keeps first occurrence)
+
+    Args:
+        paths: List of file paths to JSONL exit monitor files.
+
+    Returns:
+        List of raw dicts suitable for raw_to_feature_vector(), each
+        representing a confirmed bot (departed during exodus).
+    """
+    results = []
+    seen_ids = set()
+    skipped_no_profile = 0
+    skipped_deleted = 0
+    skipped_duplicate = 0
+
+    for path in paths:
+        p = Path(path)
+        if not p.exists():
+            print(f"  Warning: exit data file not found: {path}", file=sys.stderr)
+            continue
+
+        with open(p, "r", encoding="utf-8") as fh:
+            for line_num, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as e:
+                    print(
+                        f"  Warning: malformed JSON at {path}:{line_num}: {e}",
+                        file=sys.stderr,
+                    )
+                    continue
+
+                profile = record.get("profile")
+                if not profile:
+                    skipped_no_profile += 1
+                    continue
+
+                if profile.get("deleted", False):
+                    skipped_deleted += 1
+                    continue
+
+                uid = profile.get("id")
+                if uid in seen_ids:
+                    skipped_duplicate += 1
+                    continue
+                seen_ids.add(uid)
+
+                raw = _exit_profile_to_raw(
+                    profile, record.get("heuristic_score", 0)
+                )
+                results.append(raw)
+
+    print(
+        f"Exit data: {len(results)} departed bots from {len(paths)} file(s) "
+        f"(skipped: {skipped_no_profile} no-profile, {skipped_deleted} deleted, "
+        f"{skipped_duplicate} duplicate)",
+        file=sys.stderr,
+    )
+    return results
+
+
 def load_validation_data(path: str) -> tuple:
     """Load ground-truth data from feature-validation-full.json.
 
@@ -825,6 +977,19 @@ def main():
         help="Save the assembled ground-truth dataset to output-dir.",
     )
     parser.add_argument(
+        "--exit-data",
+        dest="exit_data",
+        nargs="+",
+        default=[],
+        help="Path(s) to exit monitor JSONL files (confirmed bot departures).",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["lightgbm", "xgboost", "sklearn_rf"],
+        default=None,
+        help="Force a specific ML backend instead of auto-selecting the best.",
+    )
+    parser.add_argument(
         "--include-bootstrap",
         dest="include_bootstrap",
         action="store_true",
@@ -860,6 +1025,15 @@ def main():
     bot_data, human_data = load_validation_data(args.validation_data)
     feature_cache = load_feature_cache(args.features_cache)
     human_reviewed = load_human_reviewed(args.labels_path)
+
+    # --- Load exit monitoring data (confirmed bot departures) ---
+    if args.exit_data:
+        exit_bots = load_exit_data(args.exit_data)
+        bot_data.extend(exit_bots)
+        print(
+            f"  → Bot data after exit merge: {len(bot_data)} total",
+            file=sys.stderr,
+        )
 
     # --- Build training set ---
     print("\nBuilding training set...", file=sys.stderr)
@@ -937,6 +1111,7 @@ def main():
         labels,
         output_dir=args.output_dir,
         channel=args.channel,
+        backend=args.backend,
     )
 
     if not result.get("success"):

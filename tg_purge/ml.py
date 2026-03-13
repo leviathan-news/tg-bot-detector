@@ -331,6 +331,7 @@ def train_model(
     labels: List[str],
     output_dir: str = "models",
     channel: Optional[str] = None,
+    backend: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Train a bot-detection classifier from labelled feature vectors.
@@ -341,7 +342,8 @@ def train_model(
       3. Convert "bot"/"human" labels to 1/0 integers.
       4. Stratified 80/20 train/test split (random_state=42).
       5. Compute scale_pos_weight = n_negatives / n_positives.
-      6. Try all available backends (LightGBM then XGBoost then sklearn RF).
+      6. Try all available backends (LightGBM then XGBoost then sklearn RF),
+         or use only the specified backend if given.
       7. Pick the backend with the highest test-set F1 score.
       8. Save model and JSON metadata to output_dir with chmod 600.
 
@@ -353,6 +355,8 @@ def train_model(
             Created (including parents) if it does not exist.
         channel: Optional channel name (with or without leading @). Used to
             prefix output filenames so multiple channels can share one dir.
+        backend: Optional backend name ('lightgbm', 'xgboost', 'sklearn_rf').
+            When specified, only that backend is tried instead of all available.
 
     Returns:
         On success::
@@ -414,13 +418,26 @@ def train_model(
     # Guard: avoid ZeroDivisionError if one class disappears after split.
     scale_pos_weight = float(n_neg) / float(n_pos) if n_pos > 0 else 1.0
 
-    # --- Try all available backends, keep the one with the best F1 ---
+    # --- Try available backends, keep the one with the best F1 ---
+    # When a specific backend is requested, only try that one. Otherwise
+    # try all available backends and pick the winner by holdout F1.
     backends = _get_available_models()
     if not backends:
         return {
             "success": False,
             "error": "No ML backend available (sklearn, lightgbm, xgboost all missing)",
         }
+
+    if backend:
+        # Filter to only the requested backend.
+        filtered = [(n, c) for n, c in backends if n == backend]
+        if not filtered:
+            return {
+                "success": False,
+                "error": f"Requested backend '{backend}' not available. "
+                         f"Available: {[n for n, _ in backends]}",
+            }
+        backends = filtered
 
     best_model = None
     best_name = ""
