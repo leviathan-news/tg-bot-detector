@@ -246,6 +246,24 @@ def load_feature_cache(path: str) -> dict:
 
     cache = data.get("features", {})
     print(f"Feature cache: {len(cache)} cached vectors", file=sys.stderr)
+
+    # Pad cached vectors that are missing newly-added feature keys.
+    # This handles the transition from 47 → 50 features without requiring
+    # a full re-bootstrap. Missing name analysis features default to 0.0
+    # (no emoji, no crypto keywords, no similarity signal).
+    if cache:
+        sample = next(iter(cache.values()))
+        missing_keys = set(FEATURE_KEYS) - set(sample.keys())
+        if missing_keys:
+            print(
+                f"  Padding {len(missing_keys)} missing feature(s) in cache: "
+                f"{sorted(missing_keys)}",
+                file=sys.stderr,
+            )
+            for vec in cache.values():
+                for key in missing_keys:
+                    vec.setdefault(key, 0.0)
+
     return cache
 
 
