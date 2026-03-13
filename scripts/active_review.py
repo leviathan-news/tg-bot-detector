@@ -238,7 +238,8 @@ def save_human_reviews(data: dict, path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def rank_by_ml_uncertainty(labels_raw: dict, features: dict,
-                           model_path: str) -> list:
+                           model_path: str, score_filter: int = None,
+                           label_filter: str = "unlabeled") -> list:
     """Rank unlabeled users by ML model uncertainty.
 
     Loads the trained model, predicts probabilities for all unlabeled
@@ -256,14 +257,20 @@ def rank_by_ml_uncertainty(labels_raw: dict, features: dict,
     """
     from tg_purge.ml import predict
 
-    # Collect unlabeled users that have feature vectors.
+    # Collect users matching the label filter that have feature vectors.
     unlabeled = []
     for uid_str, info in labels_raw.get("labels", {}).items():
-        if info.get("label") != "unlabeled":
+        if label_filter != "all" and info.get("label") != label_filter:
             continue
         feat = features.get(uid_str)
-        if feat:
-            unlabeled.append((uid_str, feat))
+        if not feat:
+            continue
+        # Filter by exact heuristic score if specified.
+        if score_filter is not None:
+            h_score = int(feat.get("heuristic_score", 0))
+            if h_score != score_filter:
+                continue
+        unlabeled.append((uid_str, feat))
 
     if not unlabeled:
         return []
@@ -283,30 +290,39 @@ def rank_by_ml_uncertainty(labels_raw: dict, features: dict,
     return ranked
 
 
-def rank_by_heuristic_score(labels_raw: dict, features: dict) -> list:
-    """Rank unlabeled users by heuristic score (highest first).
+def rank_by_heuristic_score(labels_raw: dict, features: dict,
+                           score_filter: int = None,
+                           label_filter: str = "unlabeled") -> list:
+    """Rank users by heuristic score.
 
-    Fallback mode when no ML model is available. Score-3 users are
-    closest to the bot threshold and most informative.
+    Supports filtering by specific score value and bootstrap label type.
+    Without filters, returns unlabeled users sorted by score descending.
 
     Args:
-        labels_raw: Raw labels dict from labels.json (string keys).
-        features:   Dict of uid_str -> feature dict.
+        labels_raw:    Raw labels dict from labels.json (string keys).
+        features:      Dict of uid_str -> feature dict.
+        score_filter:  If set, only include users with this exact score.
+        label_filter:  Bootstrap label to filter: "unlabeled", "human",
+                       "bot", or "all" (default: "unlabeled").
 
     Returns:
         List of (uid_str, heuristic_score, "?") sorted by score desc.
     """
-    unlabeled = []
+    candidates = []
     for uid_str, info in labels_raw.get("labels", {}).items():
-        if info.get("label") != "unlabeled":
+        # Filter by bootstrap label.
+        if label_filter != "all" and info.get("label") != label_filter:
             continue
         feat = features.get(uid_str, {})
         h_score = int(feat.get("heuristic_score", 0))
-        unlabeled.append((uid_str, h_score, "?"))
+        # Filter by exact score if specified.
+        if score_filter is not None and h_score != score_filter:
+            continue
+        candidates.append((uid_str, h_score, "?"))
 
     # Sort: highest heuristic score first (most likely bots → most informative).
-    unlabeled.sort(key=lambda x: x[1], reverse=True)
-    return unlabeled
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +456,17 @@ async def main():
         "--skip-reviewed", action="store_true", dest="skip_reviewed",
         help="Skip users that already have human reviews",
     )
+    parser.add_argument(
+        "--score", type=int, default=None,
+        help="Only review users with this heuristic score (e.g. --score 0 for humans)",
+    )
+    parser.add_argument(
+        "--label-filter", default="unlabeled", dest="label_filter",
+        help=(
+            "Which bootstrap label to review: 'unlabeled' (default), "
+            "'human', 'bot', or 'all'"
+        ),
+    )
     args = parser.parse_args()
 
     slug = channel_slug(args.channel)
@@ -497,10 +524,20 @@ async def main():
             sys.exit(1)
 
         print(f"Ranking by ML uncertainty (model: {model_path})...", file=sys.stderr)
-        ranked = rank_by_ml_uncertainty(labels_raw, features, model_path)
+        ranked = rank_by_ml_uncertainty(
+            labels_raw, features, model_path,
+            score_filter=args.score,
+            label_filter=args.label_filter,
+        )
     else:
-        print("Ranking by heuristic score (no model)...", file=sys.stderr)
-        ranked = rank_by_heuristic_score(labels_raw, features)
+        score_desc = f" (score={args.score})" if args.score is not None else ""
+        label_desc = f" label={args.label_filter}" if args.label_filter != "unlabeled" else ""
+        print(f"Ranking by heuristic score{score_desc}{label_desc}...", file=sys.stderr)
+        ranked = rank_by_heuristic_score(
+            labels_raw, features,
+            score_filter=args.score,
+            label_filter=args.label_filter,
+        )
 
     if not ranked:
         print("No unlabeled users to review.", file=sys.stderr)
