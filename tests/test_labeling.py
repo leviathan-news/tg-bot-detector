@@ -108,6 +108,68 @@ class TestBootstrapLabels:
         result = bootstrap_labels(users, scored)
         assert result[99]["label"] == "unlabeled"
 
+    def test_preserves_human_reviewed_labels(self):
+        """Human-reviewed labels must survive re-bootstrapping unchanged."""
+        users = {1: object(), 2: object()}
+        scored = {1: (0, []), 2: (5, [])}  # heuristic: 1=human, 2=bot
+
+        # Existing labels have human review overriding both.
+        existing = {
+            1: {"label": "bot", "source": "human", "timestamp": "2026-03-11T00:00:00"},
+            2: {"label": "human", "source": "human", "timestamp": "2026-03-11T00:00:00"},
+        }
+
+        result = bootstrap_labels(users, scored, existing=existing)
+
+        # Human reviews must take priority over heuristic scores.
+        assert result[1]["label"] == "bot"
+        assert result[1]["source"] == "human"
+        assert result[2]["label"] == "human"
+        assert result[2]["source"] == "human"
+
+    def test_preserves_human_labels_for_departed_users(self):
+        """Human-reviewed labels for users no longer in the channel are kept."""
+        users = {1: object()}  # Only user 1 is still in the channel.
+        scored = {1: (0, [])}
+
+        # User 99 was human-reviewed but has since left the channel.
+        existing = {
+            1: {"label": "human", "source": "heuristic_bootstrap", "timestamp": "old"},
+            99: {"label": "bot", "source": "human", "timestamp": "2026-03-11T00:00:00"},
+        }
+
+        result = bootstrap_labels(users, scored, existing=existing)
+
+        # User 1 gets new heuristic label (not human-reviewed).
+        assert result[1]["source"] == "heuristic_bootstrap"
+        # User 99's human review is preserved even though they left.
+        assert 99 in result
+        assert result[99]["label"] == "bot"
+        assert result[99]["source"] == "human"
+
+    def test_no_existing_labels_works(self):
+        """Passing existing=None behaves like the original function."""
+        users = {1: object()}
+        scored = {1: (0, [])}
+        result = bootstrap_labels(users, scored, existing=None)
+        assert result[1]["label"] == "human"
+        assert result[1]["source"] == "heuristic_bootstrap"
+
+    def test_existing_heuristic_labels_are_overwritten(self):
+        """Non-human-reviewed existing labels ARE overwritten by new scores."""
+        users = {1: object()}
+        scored = {1: (5, [])}  # New score = bot.
+
+        existing = {
+            1: {"label": "human", "source": "heuristic_bootstrap", "timestamp": "old"},
+        }
+
+        result = bootstrap_labels(users, scored, existing=existing)
+
+        # Heuristic labels get overwritten by new heuristic scores.
+        assert result[1]["label"] == "bot"
+        assert result[1]["source"] == "heuristic_bootstrap"
+
 
 # ---------------------------------------------------------------------------
 # TestLabelPersistence

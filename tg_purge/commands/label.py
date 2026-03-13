@@ -105,8 +105,13 @@ def _save_results(channel_name, all_users, join_dates, path, feature_cache=None)
             )
             feature_cache[str(uid)] = features
 
-    # Derive weak labels from heuristic scores.
-    labels = bootstrap_labels(all_users, scored)
+    # Load existing labels to preserve any human-reviewed entries.
+    # Without this, re-running bootstrap would overwrite manual reviews.
+    existing_data = load_labels(path)
+    existing_labels = existing_data.get("labels", {})
+
+    # Derive weak labels from heuristic scores, preserving human reviews.
+    labels = bootstrap_labels(all_users, scored, existing=existing_labels)
 
     # Persist labels to disk.
     save_labels(labels, channel_name, path)

@@ -261,7 +261,7 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
                 work_queue.extend(sub_queries)
                 total_planned += len(sub_queries)
 
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             # Ctrl+C during API call — stop enumeration, return partial results.
             print(
                 f"\n  Interrupted at query {completed + 1}/{total_planned}.",

@@ -447,3 +447,94 @@ class TestScoringFlag:
         parser = build_parser()
         args = parser.parse_args(["join-dates", "--channel", "@test", "--stats"])
         assert args.stats is True
+
+
+class TestPartialSave:
+    """Test that Ctrl+C partial save works with and without --output."""
+
+    def _make_mock_users(self, count=5):
+        """Create a dict of mock users for scoring."""
+        from tests.conftest import MockUser
+        users = {}
+        for i in range(1, count + 1):
+            users[i] = MockUser(
+                id=i, first_name=f"User{i}", username=f"user{i}",
+                photo=False, status=None,
+            )
+        return users
+
+    def test_partial_save_without_output_flag(self, tmp_path, monkeypatch):
+        """When interrupted=True and no --output, a partial CSV is auto-generated."""
+        from tg_purge.commands.candidates import _score_and_export
+
+        # Redirect auto-generated output into tmp_path
+        monkeypatch.chdir(tmp_path)
+
+        users = self._make_mock_users(10)
+        _score_and_export(
+            all_users=users,
+            join_dates={},
+            spike_windows=[],
+            threshold=2,
+            safelist=set(),
+            sub_count=100,
+            output_path=None,  # No --output provided
+            interrupted=True,
+        )
+
+        # A partial CSV should have been auto-generated in output/
+        partial_files = list((tmp_path / "output").glob("candidates-partial-*.csv"))
+        assert len(partial_files) == 1, f"Expected 1 partial file, found: {partial_files}"
+
+        # Verify all 10 users are in the file (header + 10 data rows)
+        lines = partial_files[0].read_text().strip().split("\n")
+        assert len(lines) == 11, f"Expected 11 lines (header + 10), got {len(lines)}"
+
+    def test_partial_save_with_output_flag(self, tmp_path):
+        """When interrupted=True and --output is provided, a -partial suffixed file is created."""
+        from tg_purge.commands.candidates import _score_and_export
+
+        output_path = str(tmp_path / "results.csv")
+        users = self._make_mock_users(5)
+
+        _score_and_export(
+            all_users=users,
+            join_dates={},
+            spike_windows=[],
+            threshold=2,
+            safelist=set(),
+            sub_count=50,
+            output_path=output_path,
+            interrupted=True,
+        )
+
+        # Should create results-partial.csv, NOT results.csv
+        partial = tmp_path / "results-partial.csv"
+        assert partial.exists(), "Expected results-partial.csv to be created"
+        assert not (tmp_path / "results.csv").exists(), "Original path should NOT be created on interrupt"
+
+        lines = partial.read_text().strip().split("\n")
+        assert len(lines) == 6  # header + 5 users
+
+    def test_normal_run_no_partial_without_output(self, tmp_path, monkeypatch):
+        """When not interrupted and no --output, no partial file is created."""
+        from tg_purge.commands.candidates import _score_and_export
+
+        monkeypatch.chdir(tmp_path)
+        users = self._make_mock_users(3)
+
+        _score_and_export(
+            all_users=users,
+            join_dates={},
+            spike_windows=[],
+            threshold=2,
+            safelist=set(),
+            sub_count=50,
+            output_path=None,
+            interrupted=False,
+        )
+
+        # No output directory should be created
+        output_dir = tmp_path / "output"
+        if output_dir.exists():
+            assert list(output_dir.glob("*")) == []

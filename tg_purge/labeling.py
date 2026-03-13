@@ -69,36 +69,63 @@ def _score_to_label(score: int) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def bootstrap_labels(users: dict, scored: dict) -> dict:
-    """Derive initial labels from heuristic scores.
+def bootstrap_labels(users: dict, scored: dict, existing: dict = None) -> dict:
+    """Derive initial labels from heuristic scores, preserving human reviews.
 
     Only users that appear in *both* `users` and `scored` receive a label.
     Users present in `users` but missing from `scored` are silently skipped
     (they have not been scored yet and carry no signal).
 
+    When `existing` is provided (from a prior labels file), any entry with
+    source="human" is preserved unchanged — human-reviewed labels always
+    take priority over heuristic re-bootstrapping. This prevents accidental
+    loss of manual review work when re-running bootstrap.
+
     Args:
-        users:  Mapping of user_id (int) → User object.
-        scored: Mapping of user_id (int) → (score: int, reasons: list[str]).
+        users:    Mapping of user_id (int) → User object.
+        scored:   Mapping of user_id (int) → (score: int, reasons: list[str]).
+        existing: Optional mapping of user_id (int) → label info dict from
+                  a prior labels file. Entries with source="human" are kept.
 
     Returns:
         dict mapping user_id (int) → {
             "label":     str,
-            "source":    "heuristic_bootstrap",
+            "source":    "heuristic_bootstrap" | "human",
             "timestamp": ISO-8601 UTC string,
         }
     """
     now_iso = datetime.now(timezone.utc).isoformat()
     result = {}
 
+    # Collect human-reviewed entries from existing labels to preserve them.
+    preserved = {}
+    if existing:
+        for uid, info in existing.items():
+            if info.get("source") == "human":
+                preserved[uid] = info
+
     for uid, (score, _reasons) in scored.items():
         # Only include users that exist in the users mapping.
         if uid not in users:
             continue
+
+        # Preserve human-reviewed labels — they take priority over heuristic.
+        if uid in preserved:
+            result[uid] = preserved[uid]
+            continue
+
         result[uid] = {
             "label": _score_to_label(score),
             "source": "heuristic_bootstrap",
             "timestamp": now_iso,
         }
+
+    # Include preserved human-reviewed entries for users NOT in the current
+    # enumeration (they may have left the channel but their labels are still
+    # valuable for training).
+    for uid, info in preserved.items():
+        if uid not in result:
+            result[uid] = info
 
     return result
 

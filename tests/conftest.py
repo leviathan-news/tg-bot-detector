@@ -45,13 +45,36 @@ class UserStatusOffline(MockUserStatus):
         self.was_online = was_online
 
 
+class MockProfilePhoto:
+    """Mock Telethon UserProfilePhoto with configurable metadata.
+
+    Mirrors the real UserProfilePhoto fields available without downloading:
+      - photo_id: unique identifier for the profile photo
+      - dc_id: data center where the photo is stored (1-5)
+      - has_video: whether the profile has an animated video avatar
+      - stripped_thumb: tiny inline JPEG thumbnail bytes (typically 100-200 bytes)
+    """
+
+    def __init__(self, photo_id=123456, dc_id=2, has_video=False,
+                 stripped_thumb=None):
+        self.photo_id = photo_id
+        self.dc_id = dc_id
+        self.has_video = has_video
+        self.stripped_thumb = stripped_thumb
+
+
 class MockUser:
     """Mock Telethon User with configurable attributes."""
 
     def __init__(self, id=1, deleted=False, bot=False, scam=False, fake=False,
                  restricted=False, status=None, photo=True, username="testuser",
                  first_name="Test", last_name="User", premium=False,
-                 emoji_status=None):
+                 emoji_status=None, photo_dc_id=None, photo_has_video=False,
+                 photo_id=None, photo_stripped_thumb=None,
+                 color=None, profile_color=None, stories_max_id=None,
+                 stories_unavailable=False, contact_require_premium=False,
+                 usernames=None, verified=False, lang_code=None,
+                 send_paid_messages_stars=None):
         self.id = id
         self.deleted = deleted
         self.bot = bot
@@ -59,12 +82,37 @@ class MockUser:
         self.fake = fake
         self.restricted = restricted
         self.status = status
-        self.photo = "photo_placeholder" if photo else None
         self.username = username
         self.first_name = first_name
         self.last_name = last_name
         self.premium = premium
         self.emoji_status = emoji_status
+
+        # Extended profile fields (MTProto layer 160+)
+        self.color = color
+        self.profile_color = profile_color
+        self.stories_max_id = stories_max_id
+        self.stories_unavailable = stories_unavailable
+        self.contact_require_premium = contact_require_premium
+        self.usernames = usernames
+        self.verified = verified
+        self.lang_code = lang_code
+        self.send_paid_messages_stars = send_paid_messages_stars
+
+        # Build photo attribute: either a MockProfilePhoto with metadata,
+        # a simple placeholder string (backward compat), or None.
+        if photo and (photo_dc_id is not None or photo_has_video or
+                      photo_id is not None or photo_stripped_thumb is not None):
+            self.photo = MockProfilePhoto(
+                photo_id=photo_id or 123456,
+                dc_id=photo_dc_id or 2,
+                has_video=photo_has_video,
+                stripped_thumb=photo_stripped_thumb,
+            )
+        elif photo:
+            self.photo = "photo_placeholder"
+        else:
+            self.photo = None
 
 
 @pytest.fixture

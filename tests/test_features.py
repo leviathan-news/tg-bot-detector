@@ -17,6 +17,7 @@ from tests.conftest import (
     UserStatusLastMonth,
     UserStatusOffline,
     MockUser,
+    MockProfilePhoto,
 )
 from tg_purge.features import extract_features, FEATURE_KEYS
 
@@ -383,6 +384,227 @@ class TestTemporalFeatures:
 
 
 # ---------------------------------------------------------------------------
+# TestPhotoFeatures
+# ---------------------------------------------------------------------------
+
+class TestPhotoFeatures:
+    """Photo metadata and quality features: photo_dc_id, photo_has_video,
+    photo_dc_is_1, photo_dc_is_5, photo_file_size, photo_edge_std,
+    photo_lum_variance, photo_sat_mean."""
+
+    # --- Metadata features (free, from user.photo object) ---
+
+    def test_no_photo_all_zeros(self, make_user):
+        """User with no photo should have all photo features at 0."""
+        user = make_user(photo=False)
+        f = extract_features(user)
+        assert f["photo_dc_id"] == 0.0
+        assert f["photo_has_video"] == 0.0
+        assert f["photo_dc_is_1"] == 0.0
+        assert f["photo_dc_is_5"] == 0.0
+
+    def test_photo_dc_id_extracted(self, make_user):
+        """DC ID should be extracted from photo metadata."""
+        user = make_user(photo=True, photo_dc_id=4)
+        f = extract_features(user)
+        assert f["photo_dc_id"] == 4.0
+
+    def test_photo_dc_1_flag(self, make_user):
+        """DC 1 flag should be set when photo is on DC 1 (bot-heavy)."""
+        user = make_user(photo=True, photo_dc_id=1)
+        f = extract_features(user)
+        assert f["photo_dc_is_1"] == 1.0
+        assert f["photo_dc_is_5"] == 0.0
+
+    def test_photo_dc_5_flag(self, make_user):
+        """DC 5 flag should be set when photo is on DC 5 (zero bots observed)."""
+        user = make_user(photo=True, photo_dc_id=5)
+        f = extract_features(user)
+        assert f["photo_dc_is_5"] == 1.0
+        assert f["photo_dc_is_1"] == 0.0
+
+    def test_photo_dc_other_no_flags(self, make_user):
+        """DC 2/3/4 should have neither DC 1 nor DC 5 flag set."""
+        user = make_user(photo=True, photo_dc_id=2)
+        f = extract_features(user)
+        assert f["photo_dc_is_1"] == 0.0
+        assert f["photo_dc_is_5"] == 0.0
+
+    def test_photo_has_video_true(self, make_user):
+        """Animated video avatar should set has_video flag."""
+        user = make_user(photo=True, photo_dc_id=2, photo_has_video=True)
+        f = extract_features(user)
+        assert f["photo_has_video"] == 1.0
+
+    def test_photo_has_video_false(self, make_user):
+        """Non-animated photo should have has_video = 0."""
+        user = make_user(photo=True, photo_dc_id=2, photo_has_video=False)
+        f = extract_features(user)
+        assert f["photo_has_video"] == 0.0
+
+    def test_photo_placeholder_string_no_metadata(self, make_user):
+        """Legacy string placeholder (no dc_id attr) should gracefully default."""
+        user = make_user(photo=True)  # No photo_dc_id → string placeholder
+        f = extract_features(user)
+        assert f["photo_dc_id"] == 0.0
+        assert f["photo_has_video"] == 0.0
+
+    # --- Quality features (from downloaded photo analysis) ---
+
+    def test_photo_quality_defaults_to_zero(self, make_user):
+        """Without photo_quality data, all quality features should be 0."""
+        user = make_user(photo=True, photo_dc_id=2)
+        f = extract_features(user)
+        assert f["photo_file_size"] == 0.0
+        assert f["photo_edge_std"] == 0.0
+        assert f["photo_lum_variance"] == 0.0
+        assert f["photo_sat_mean"] == 0.0
+
+    def test_photo_quality_populated(self, make_user):
+        """Photo quality metrics should be passed through from photo_quality dict."""
+        user = make_user(photo=True, photo_dc_id=2)
+        quality = {
+            "photo_file_size": 63000.0,
+            "photo_edge_std": 7.38,
+            "photo_lum_variance": 3534.0,
+            "photo_sat_mean": 0.303,
+        }
+        f = extract_features(user, photo_quality=quality)
+        assert f["photo_file_size"] == pytest.approx(63000.0)
+        assert f["photo_edge_std"] == pytest.approx(7.38)
+        assert f["photo_lum_variance"] == pytest.approx(3534.0)
+        assert f["photo_sat_mean"] == pytest.approx(0.303)
+
+    def test_photo_quality_partial(self, make_user):
+        """Missing keys in photo_quality should default to 0."""
+        user = make_user(photo=True, photo_dc_id=2)
+        quality = {"photo_file_size": 50000.0}
+        f = extract_features(user, photo_quality=quality)
+        assert f["photo_file_size"] == pytest.approx(50000.0)
+        assert f["photo_edge_std"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# TestExtendedProfileFeatures
+# ---------------------------------------------------------------------------
+
+class TestExtendedProfileFeatures:
+    """Extended profile signals: has_custom_color, has_profile_color,
+    has_stories, has_contact_require_premium, usernames_count."""
+
+    def test_defaults_all_zero(self, make_user):
+        """Default MockUser has no extended profile customization."""
+        user = make_user()
+        f = extract_features(user)
+        assert f["has_custom_color"] == 0.0
+        assert f["has_profile_color"] == 0.0
+        assert f["has_stories"] == 0.0
+        assert f["has_contact_require_premium"] == 0.0
+        assert f["usernames_count"] == 0.0
+
+    def test_custom_color_set(self, make_user):
+        """User with custom name/chat color should flag has_custom_color."""
+        user = make_user(color="some_peer_color_object")
+        f = extract_features(user)
+        assert f["has_custom_color"] == 1.0
+
+    def test_profile_color_set(self, make_user):
+        """User with profile page color should flag has_profile_color."""
+        user = make_user(profile_color="some_profile_color_object")
+        f = extract_features(user)
+        assert f["has_profile_color"] == 1.0
+
+    def test_has_stories_from_max_id(self, make_user):
+        """User with stories_max_id > 0 should flag has_stories."""
+        user = make_user(stories_max_id=42)
+        f = extract_features(user)
+        assert f["has_stories"] == 1.0
+
+    def test_no_stories_max_id_zero(self, make_user):
+        """User with stories_max_id = 0 should not flag has_stories."""
+        user = make_user(stories_max_id=0)
+        f = extract_features(user)
+        assert f["has_stories"] == 0.0
+
+    def test_contact_require_premium_true(self, make_user):
+        """User requiring premium to contact should flag."""
+        user = make_user(contact_require_premium=True)
+        f = extract_features(user)
+        assert f["has_contact_require_premium"] == 1.0
+
+    def test_usernames_count(self, make_user):
+        """Multiple collectible usernames should be counted."""
+        # Simulating Telethon Username objects as simple dicts
+        user = make_user(usernames=[{"username": "primary"}, {"username": "extra"}])
+        f = extract_features(user)
+        assert f["usernames_count"] == 2.0
+
+    def test_usernames_none(self, make_user):
+        """No usernames list should yield 0."""
+        user = make_user(usernames=None)
+        f = extract_features(user)
+        assert f["usernames_count"] == 0.0
+
+    def test_stories_unavailable_true(self, make_user):
+        """stories_unavailable flag should be extracted."""
+        user = make_user(stories_unavailable=True)
+        f = extract_features(user)
+        assert f["stories_unavailable"] == 1.0
+
+    def test_stories_unavailable_false(self, make_user):
+        user = make_user(stories_unavailable=False)
+        f = extract_features(user)
+        assert f["stories_unavailable"] == 0.0
+
+    def test_verified_true(self, make_user):
+        """Telegram-verified accounts should flag is_verified."""
+        user = make_user(verified=True)
+        f = extract_features(user)
+        assert f["is_verified"] == 1.0
+
+    def test_verified_false(self, make_user):
+        user = make_user(verified=False)
+        f = extract_features(user)
+        assert f["is_verified"] == 0.0
+
+    def test_has_lang_code(self, make_user):
+        """User with lang_code set should flag has_lang_code."""
+        user = make_user(lang_code="en")
+        f = extract_features(user)
+        assert f["has_lang_code"] == 1.0
+
+    def test_no_lang_code(self, make_user):
+        user = make_user(lang_code=None)
+        f = extract_features(user)
+        assert f["has_lang_code"] == 0.0
+
+    def test_paid_messages_set(self, make_user):
+        """User charging Stars for messages should flag has_paid_messages."""
+        user = make_user(send_paid_messages_stars=100)
+        f = extract_features(user)
+        assert f["has_paid_messages"] == 1.0
+
+    def test_paid_messages_not_set(self, make_user):
+        user = make_user(send_paid_messages_stars=None)
+        f = extract_features(user)
+        assert f["has_paid_messages"] == 0.0
+
+    def test_stars_subscriber_from_participant_data(self, make_user):
+        """Stars subscriber flag from ChannelParticipant metadata."""
+        from datetime import datetime, timezone
+        user = make_user()
+        participant = {"subscription_until_date": datetime(2026, 12, 31, tzinfo=timezone.utc)}
+        f = extract_features(user, participant_data=participant)
+        assert f["is_stars_subscriber"] == 1.0
+
+    def test_no_stars_subscriber(self, make_user):
+        """No participant data means no Stars subscription."""
+        user = make_user()
+        f = extract_features(user)
+        assert f["is_stars_subscriber"] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # TestHeuristicScoreFeature
 # ---------------------------------------------------------------------------
 
@@ -506,6 +728,14 @@ class TestFeatureCompleteness:
         # Cohort
         "is_cohort_member", "cohort_size", "cohort_join_spread_hours",
         "cohort_profile_similarity",
+        # Photo metadata
+        "photo_dc_id", "photo_has_video", "photo_dc_is_1", "photo_dc_is_5",
+        # Photo quality
+        "photo_file_size", "photo_edge_std", "photo_lum_variance", "photo_sat_mean",
+        # Extended profile
+        "has_custom_color", "has_profile_color", "has_stories",
+        "stories_unavailable", "has_contact_require_premium", "usernames_count",
+        "is_verified", "has_lang_code", "has_paid_messages", "is_stars_subscriber",
         # Heuristic
         "heuristic_score",
     }
@@ -532,13 +762,13 @@ class TestFeatureCompleteness:
     def test_feature_keys_has_no_duplicates(self):
         assert len(FEATURE_KEYS) == len(set(FEATURE_KEYS))
 
-    def test_feature_count_is_29(self, make_user):
+    def test_feature_count_is_47(self, make_user):
         user = make_user()
         f = extract_features(user)
-        assert len(f) == 29
+        assert len(f) == 47
 
-    def test_feature_keys_length_is_29(self):
-        assert len(FEATURE_KEYS) == 29
+    def test_feature_keys_length_is_47(self):
+        assert len(FEATURE_KEYS) == 47
 
     def test_all_keys_present_for_deleted_user(self, deleted_user):
         # Deleted users must still produce a complete feature vector.
