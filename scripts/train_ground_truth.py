@@ -573,6 +573,15 @@ def build_training_set(
             else:
                 stats["bootstrap_human"] += 1
 
+    # When bootstrap labels are included, drop heuristic_score from all
+    # vectors to prevent circularity. Bootstrap labels are derived from
+    # heuristic_score (score >= threshold → bot), so keeping it as a feature
+    # lets the model trivially learn the labeling rule instead of real patterns.
+    if include_bootstrap:
+        for vec in features:
+            vec.pop("heuristic_score", None)
+        stats["dropped_heuristic_score"] = True
+
     return features, labels, stats
 
 
@@ -878,6 +887,11 @@ def main():
         print(
             f"  Bootstrap:       {stats['bootstrap_bot']} bot + "
             f"{stats['bootstrap_human']} human (high-confidence heuristic)",
+            file=sys.stderr,
+        )
+    if stats.get("dropped_heuristic_score"):
+        print(
+            "  NOTE: heuristic_score dropped to prevent circular labels",
             file=sys.stderr,
         )
 
