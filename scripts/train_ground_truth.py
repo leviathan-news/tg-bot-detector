@@ -404,6 +404,9 @@ def build_training_set(
     human_data: list,
     feature_cache: dict,
     human_reviewed: dict,
+    include_bootstrap: bool = False,
+    bootstrap_bot_threshold: int = 4,
+    bootstrap_human_threshold: int = 0,
 ) -> tuple:
     """Build aligned feature vectors and labels from all data sources.
 
@@ -418,12 +421,17 @@ def build_training_set(
     Priority for labels:
       1. Human-reviewed labels (highest confidence)
       2. Ground-truth source labels (departed = bot, labeled = human)
+      3. High-confidence bootstrap labels (score >= threshold, optional)
 
     Args:
         bot_data: List of raw dicts for departed bots.
         human_data: List of raw dicts for labeled humans.
         feature_cache: Dict of uid_str -> cached feature vector.
         human_reviewed: Dict of uid_str -> human-reviewed label.
+        include_bootstrap: If True, add high-confidence bootstrap users
+            from the feature cache (using heuristic_score thresholds).
+        bootstrap_bot_threshold: Min heuristic_score to label as bot (default 4).
+        bootstrap_human_threshold: Max heuristic_score to label as human (default 0).
 
     Returns:
         Tuple of (features: list[dict], labels: list[str], stats: dict).
@@ -440,6 +448,8 @@ def build_training_set(
         "human_reviewed_added": 0,
         "human_reviewed_override": 0,
         "skipped_deleted": 0,
+        "bootstrap_bot": 0,
+        "bootstrap_human": 0,
     }
 
     # Set of user IDs already added (prevent duplicates).
@@ -520,6 +530,48 @@ def build_training_set(
         features.append(vec)
         labels.append(label)
         stats["human_reviewed_added"] += 1
+
+    # --- Add high-confidence bootstrap users ---
+    # Users with very high or very low heuristic scores are reliable enough
+    # to use as training data. Score >= 4 means multiple strong bot signals
+    # (deleted, scam, no-status + no-photo, etc.). Score 0 means a clean
+    # profile with no bot indicators. These expand the training set without
+    # introducing ambiguous labels.
+    #
+    # No data leakage concern: all bootstrap users come from the same
+    # feature cache (same data source), so temporal/cohort features are
+    # consistently populated.
+    if include_bootstrap:
+        for uid_str, vec_orig in feature_cache.items():
+            if uid_str in seen_uids:
+                continue
+
+            # Skip deleted accounts — no useful profile features.
+            if vec_orig.get("is_deleted", 0) == 1:
+                continue
+
+            score = vec_orig.get("heuristic_score", -1)
+
+            # Human review overrides bootstrap label.
+            if uid_str in human_reviewed:
+                label = human_reviewed[uid_str]
+            elif score >= bootstrap_bot_threshold:
+                label = "bot"
+            elif score <= bootstrap_human_threshold:
+                label = "human"
+            else:
+                continue  # Ambiguous score — skip.
+
+            seen_uids.add(uid_str)
+            vec = dict(vec_orig)
+            _neutralize_leaked_features(vec)
+            features.append(vec)
+            labels.append(label)
+
+            if label == "bot":
+                stats["bootstrap_bot"] += 1
+            else:
+                stats["bootstrap_human"] += 1
 
     return features, labels, stats
 
@@ -763,6 +815,26 @@ def main():
         action="store_true",
         help="Save the assembled ground-truth dataset to output-dir.",
     )
+    parser.add_argument(
+        "--include-bootstrap",
+        dest="include_bootstrap",
+        action="store_true",
+        help="Include high-confidence bootstrap labels (score>=4 bot, score<=0 human).",
+    )
+    parser.add_argument(
+        "--bootstrap-bot-threshold",
+        dest="bootstrap_bot_threshold",
+        type=int,
+        default=4,
+        help="Min heuristic score to auto-label as bot (default: 4).",
+    )
+    parser.add_argument(
+        "--bootstrap-human-threshold",
+        dest="bootstrap_human_threshold",
+        type=int,
+        default=0,
+        help="Max heuristic score to auto-label as human (default: 0).",
+    )
     args = parser.parse_args()
 
     # --- Check ML dependencies ---
@@ -784,6 +856,9 @@ def main():
     print("\nBuilding training set...", file=sys.stderr)
     features, labels, stats = build_training_set(
         bot_data, human_data, feature_cache, human_reviewed,
+        include_bootstrap=args.include_bootstrap,
+        bootstrap_bot_threshold=args.bootstrap_bot_threshold,
+        bootstrap_human_threshold=args.bootstrap_human_threshold,
     )
 
     n_bot = sum(1 for l in labels if l == "bot")
@@ -799,6 +874,12 @@ def main():
         print(f"  Human-reviewed:  {stats['human_reviewed_added']} added", file=sys.stderr)
     if stats["human_reviewed_override"] > 0:
         print(f"  Overrides:       {stats['human_reviewed_override']} labels changed by human review", file=sys.stderr)
+    if stats["bootstrap_bot"] > 0 or stats["bootstrap_human"] > 0:
+        print(
+            f"  Bootstrap:       {stats['bootstrap_bot']} bot + "
+            f"{stats['bootstrap_human']} human (high-confidence heuristic)",
+            file=sys.stderr,
+        )
 
     if len(features) < 10:
         print("Error: fewer than 10 samples. Check data paths.", file=sys.stderr)
