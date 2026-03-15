@@ -18,6 +18,7 @@ from ..client import create_client, resolve_channel
 from ..config import load_config
 from ..enumeration import enumerate_subscribers
 from ..scoring import score_user
+from ..clustering import detect_spike_windows
 
 
 REGISTRY_VERSION = 1
@@ -81,6 +82,8 @@ async def run_generate(args):
     config = load_config(getattr(args, "config", None))
     if args.session_path:
         config.session_path = args.session_path
+    if getattr(args, "delay", None) is not None:
+        config.delay = args.delay
     channel_name = config.resolve_channel(args.channel)
     threshold = getattr(args, "threshold", None) or config.threshold
     output_path = getattr(args, "output", None) or DEFAULT_REGISTRY_PATH
@@ -102,12 +105,25 @@ async def run_generate(args):
         )
 
         all_users = result["users"]
+        join_dates = result["join_dates"]
         print(f"Total users enumerated: {len(all_users)}")
+
+        # Auto-detect spike windows from join dates
+        auto_cluster = not getattr(args, "no_auto_cluster", False)
+        spike_windows = []
+        if auto_cluster and join_dates:
+            spike_windows = detect_spike_windows(join_dates)
+            if spike_windows:
+                print(f"Auto-detected {len(spike_windows)} spike window(s)")
 
         # Score and filter
         entries = []
         for uid, user in all_users.items():
-            s, reasons = score_user(user)
+            s, reasons = score_user(
+                user,
+                join_date=join_dates.get(uid),
+                spike_windows=spike_windows,
+            )
             if s >= threshold:
                 entries.append({
                     "user_id": uid,
@@ -178,7 +194,12 @@ async def run_check(args):
         print(f"Error: {e}")
         return
 
-    user_id = int(args.user_id)
+    try:
+        user_id = int(args.user_id)
+    except ValueError:
+        print(f"Error: invalid user ID: {args.user_id!r} (must be numeric)")
+        return
+
     for entry in registry["entries"]:
         if entry.get("user_id") == user_id:
             print(f"FOUND in registry:")

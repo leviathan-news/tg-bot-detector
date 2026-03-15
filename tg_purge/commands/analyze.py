@@ -15,6 +15,7 @@ import asyncio
 from ..client import create_client, resolve_channel
 from ..config import load_config
 from ..enumeration import fetch_bots, fetch_recent, fetch_by_search, MINIMAL_QUERIES, FULL_QUERIES
+from ..clustering import detect_spike_windows
 from ..scoring import score_user, format_name, status_label
 from ..formatters import (
     print_section,
@@ -30,6 +31,8 @@ async def run(args):
     config = load_config(getattr(args, "config", None))
     if args.session_path:
         config.session_path = args.session_path
+    if getattr(args, "delay", None) is not None:
+        config.delay = args.delay
     channel_name = config.resolve_channel(args.channel)
 
     client = await create_client(config)
@@ -83,17 +86,24 @@ async def run(args):
 
         queries = FULL_QUERIES if args.strategy == "full" else MINIMAL_QUERIES
         search_users = {}  # id -> (user, source_query)
+        search_join_dates = {}
 
         for query in queries:
             display_q = repr(query) if query else '""'
             try:
-                users, _ = await fetch_by_search(client, channel, query)
+                users, participants = await fetch_by_search(client, channel, query)
                 new_users = [u for u in users if u.id not in seen_ids]
 
                 for u in new_users:
                     if u.id not in search_users:
                         search_users[u.id] = (u, display_q)
                     seen_ids.add(u.id)
+
+                # Collect join dates from participants
+                for p in participants:
+                    if hasattr(p, 'user_id') and hasattr(p, 'date') and p.date:
+                        if p.user_id not in search_join_dates:
+                            search_join_dates[p.user_id] = p.date
 
                 hit_cap = " >> HIT 200 CAP" if len(users) >= 200 else ""
                 print(f"  Search {display_q:6s}: {len(users):3d} results, {len(new_users):3d} new{hit_cap}")
@@ -103,10 +113,24 @@ async def run(args):
 
             await asyncio.sleep(delay)
 
+        # Auto-detect spike windows from search join dates
+        auto_cluster = not getattr(args, "no_auto_cluster", False)
+        spike_windows = []
+        if auto_cluster and search_join_dates:
+            spike_windows = detect_spike_windows(search_join_dates)
+            if spike_windows:
+                print(f"\nAuto-detected {len(spike_windows)} spike window(s):")
+                for start, end in spike_windows:
+                    print(f"  {start.strftime('%Y-%m-%d %H:%M')} — {end.strftime('%Y-%m-%d %H:%M')} UTC")
+
         # Score search-discovered users
         search_scored = []
         for uid, (user, source) in search_users.items():
-            s, reasons = score_user(user)
+            s, reasons = score_user(
+                user,
+                join_date=search_join_dates.get(uid),
+                spike_windows=spike_windows,
+            )
             search_scored.append((user, s, reasons))
 
         search_scored.sort(key=lambda x: -x[1])

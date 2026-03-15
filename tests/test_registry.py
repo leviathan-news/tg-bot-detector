@@ -1,12 +1,16 @@
 """Tests for registry JSON parsing, validation, and management."""
 
+import asyncio
 import json
 import os
 import pytest
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
-from tg_purge.commands.registry import _load_registry, _save_registry, _existing_ids
+from tg_purge.commands.registry import (
+    _load_registry, _save_registry, _existing_ids, run_check,
+)
 
 
 class TestLoadRegistry:
@@ -168,3 +172,20 @@ class TestExistingIds:
         }
         ids = _existing_ids(data)
         assert ids == {100}
+
+
+class TestRunCheck:
+    """Test registry check command error handling."""
+
+    def test_non_numeric_user_id_prints_error(self, capsys):
+        """Non-numeric user ID should print an error, not crash."""
+        args = MagicMock()
+        args.user_id = "not_a_number"
+        args.registry_path = "/tmp/nonexistent_test_registry.json"
+
+        # run_check is async, so wrap in asyncio.run. It should return
+        # gracefully after printing an error (not raise ValueError).
+        asyncio.run(run_check(args))
+
+        captured = capsys.readouterr()
+        assert "invalid user ID" in captured.out
