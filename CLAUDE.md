@@ -17,6 +17,9 @@ pip install -e .
 # Install with TOML config support on Python <3.11
 pip install -e ".[toml]"
 
+# Install with ML dependencies (scikit-learn, lightgbm, xgboost, numpy, pandas)
+pip install -e ".[ml]"
+
 # Run tests
 python -m pytest tests/ -v
 
@@ -42,6 +45,8 @@ Requires Python >= 3.9.
 | `spike` | Deep-dive analysis of a specific time window vs control group |
 | `validate` | Score known-good users from CSV to measure false positive rate |
 | `registry` | Local bot registry management: `generate`, `add`, `check` |
+| `label` | Bootstrap weak labels from heuristic scores (`--bootstrap`) or print label stats |
+| `ml` | ML model management: `train`, `info`, `export-features` |
 
 All subcommands accept `--delay` (override API query rate), `--session-path`, `--config`.
 
@@ -64,7 +69,7 @@ Key design decisions:
 - Deleted accounts get +5 and early return (skip all other checks)
 - `ScoringConfig` dataclass holds all weights — defaults are canonical, overridable for experimentation
 - Status type detection uses `type(status).__name__` string comparison to avoid requiring Telethon at import time — this is intentional for testability
-- Positive signals (premium, emoji_status) are stored as negative ints in config and added to score
+- Positive signals (premium, emoji_status) are stored as negative ints in config and added to score. **Caveat:** Bot farms purchase Telegram Premium — the `premium(-2)` weight is gameable and weaker than assumed. The ML model handles this better by combining premium with other features
 - Optional `join_date` + `spike_windows` params enable spike detection signal (`spike_join`, +2) without breaking backward compatibility
 - `tg_purge/clustering.py` provides `detect_spike_windows()` — sliding-window auto-detection of bulk-subscription spikes from join dates. Used by `candidates`, `registry generate`, `analyze`, and `join-dates`. Coexists with manual `--start/--end` spike windows. Disable with `--no-auto-cluster`.
 
@@ -74,11 +79,50 @@ Two query sets: `MINIMAL_QUERIES` (22) and `FULL_QUERIES` (69, includes CJK char
 
 `enumerate_subscribers()` uses a work-queue pattern and is the main entry point for `candidates`, `join-dates`, `spike`, and `registry generate`. The `analyze` command does its own phased enumeration (bots → recent → search) instead — it does **not** use recursive prefix expansion. Errors during individual queries are logged to stderr and skipped (non-fatal).
 
+### Collectors (`tg_purge/collectors/`)
+
+Abstraction layer over different subscriber-discovery methods. Each collector returns a `CollectorResult` (dataclass from `base.py`) and a static `merge()` method combines multiple results, deduplicating by user ID.
+
+| Collector | Source | Notes |
+|-----------|--------|-------|
+| `api.py` | `enumerate_subscribers()` search queries | Primary collector, wraps enumeration.py |
+| `admin_log.py` | `GetAdminLogRequest` (join/leave/ban/kick events) | Historical view, ~48h retention |
+| `message_authors.py` | `GetHistoryRequest` message history | Discovers users who posted in the channel |
+
+### ML pipeline
+
+Parallel path to the heuristic scorer, currently on `feat/ml-detection` branch.
+
+**Feature extraction** (`features.py`): Extracts ~50 numeric features from a User object into a `dict[str, float]`. Includes the heuristic score as one feature among many. Same `type().__name__` pattern as scoring.py for Telethon-free testability. No numpy/pandas dependency — plain dicts.
+
+**Labeling** (`labeling.py`): Data layer for label management. Bootstrap taxonomy: `"bot"` (score ≥ 4), `"human"` (score 0), `"unlabeled"` (score 1–3). Labels persisted to `datasets/<channel_slug>/labels.json`. Contains real user IDs (PII) — same security treatment as registry files.
+
+**Training/inference** (`ml.py`): Ensemble classifier with preference cascade: LightGBM > XGBoost > sklearn RandomForest (first available wins). All heavy imports (`sklearn`, `lightgbm`, `xgboost`, `joblib`) are lazy — check `ml_available()` before calling. Trained models saved to `models/` as `.joblib` + `.json` metadata.
+
+**Training workflow:** Use `scripts/train_ground_truth.py` for real training (not `tg-purge ml train` which uses circular heuristic-derived labels). Key safeguards:
+- `--include-bootstrap` auto-drops `heuristic_score` feature to prevent circularity (bootstrap labels are derived from the score)
+- Temporal features (`days_since_join`, `join_hour_utc`, `days_since_last_seen`) are neutralized during training to prevent data leakage from source artifacts
+- Human reviews stored separately in `datasets/<channel>/human_reviews.json` — never overwritten by `bootstrap_labels()`
+
+**Statistics** (`statistics.py`): Wilson score confidence intervals and sample bias estimation (Pareto heuristic). Pure stdlib math, no external deps.
+
+**Cross-channel** (`cross_channel.py`): Cohort detection — finds user groups appearing together across multiple channels with tight join-time clustering, suggesting coordinated bot subscription runs.
+
+### Scripts (`scripts/`)
+
+Offline analysis and ML workflow scripts (not installed as CLI commands):
+- `train_ground_truth.py` — Train ML model from labelled data
+- `active_review.py` — Interactive human label review (`--score`, `--label-filter`)
+- `predict_unlabeled.py` — Run inference on unlabelled users
+- `extract_features_from_labels.py` — Build feature vectors from label files
+- `monitor_leaves.py` — Track subscriber departures via admin log polling
+- `fetch_uncertain_profiles.py`, `review_labels.py`, `validate_new_features.py`, `analyze_profile_photos.py`
+
 ### Testing (`tests/`)
 
 Tests use `MockUser` objects from `conftest.py` that mirror Telethon's `User` attribute interface. Mock status classes (`UserStatusEmpty`, `UserStatusOffline`, etc.) have matching `__name__` strings so `scoring.py`'s type-name-based dispatch works without Telethon installed. The `make_user` fixture is a factory with auto-incrementing IDs.
 
-No integration tests exist — all tests are unit tests against scoring logic, CLI parsing, config loading, registry CRUD, enumeration query sets/expansion logic, and clustering. No Telegram API calls in tests. 154 tests total.
+No integration tests exist — all tests are unit tests against scoring logic, CLI parsing, config loading, registry CRUD, enumeration query sets/expansion logic, clustering, ML features, labeling, statistics, cross-channel, and collectors. No Telegram API calls in tests. ~453 tests total.
 
 ### Config priority
 
@@ -98,3 +142,12 @@ No integration tests exist — all tests are unit tests against scoring logic, C
 - `registry/*.json` files contain real Telegram user IDs — gitignored, never distribute
 - `config.toml` may contain API credentials — gitignored
 - `client.py` prints connection info (user's first name, channel title, subscriber count) to **stderr** only — no PII on stdout
+- `models/*.joblib` files are trusted local artifacts — never load model files from untrusted sources (joblib deserialisation can execute arbitrary code). Output dir is chmod 700, files chmod 600
+- `datasets/*/labels.json` files contain real Telegram user IDs — same PII treatment as registry files
+
+## Gotchas
+
+- **ChatAction events don't work for broadcast channels** — only fires for groups/supergroups. Use admin log polling (`GetAdminLogRequest`) for join/leave detection. See `collectors/admin_log.py`
+- **`asyncio.run()` swallows KeyboardInterrupt** — converts SIGINT to `CancelledError` before `try/except KeyboardInterrupt` can catch it. Critical save-on-interrupt logic must be synchronous with SIGINT blocked via `signal.signal()`. See canonical pattern in `commands/candidates.py`
+- **Telethon session files use SQLite** — multiple processes sharing a `.session` file causes locking errors. Copy session files for parallel processes (`--session-path` per process)
+- **Admin log pagination** — `min_id` for forward polling (new events), `max_id` for backward pagination (history). Events arrive newest-first. ~48h retention only

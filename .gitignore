@@ -25,6 +25,15 @@ registry/*.json
 *.swp
 *.swo
 
+# Datasets (contain real user IDs — PII sensitive)
+datasets/
+
+# Trained ML models
+models/
+
+# Output files
+output/
+
 # OS
 .DS_Store
 Thumbs.db

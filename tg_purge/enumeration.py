@@ -154,8 +154,40 @@ EXPANSION_CHARS = list("abcdefghijklmnopqrstuvwxyz0123456789")
 RESULT_CAP = 200
 
 
+class YieldTracker:
+    """Tracks per-prefix query yields for adaptive expansion decisions.
+
+    Records how many results each prefix returned. Prefixes that hit
+    the RESULT_CAP are candidates for expansion; those that didn't
+    are not worth expanding further.
+    """
+
+    def __init__(self):
+        # Maps prefix string -> result count recorded for that prefix.
+        self._yields = {}
+
+    def record(self, prefix, count):
+        """Record the result count for a prefix query.
+
+        Overwrites any previously recorded count for the same prefix,
+        so the most recent query result always wins.
+        """
+        self._yields[prefix] = count
+
+    def should_expand(self, prefix):
+        """Return True if prefix hit the result cap and should be expanded.
+
+        A prefix is a candidate for expansion when its recorded result count
+        equals RESULT_CAP, indicating the API truncated the result set and
+        there may be additional matching subscribers beyond the cap.
+        Returns False for any prefix that was never recorded.
+        """
+        return self._yields.get(prefix, 0) >= RESULT_CAP
+
+
 async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
-                                progress_callback=None, max_depth=3):
+                                progress_callback=None, max_depth=3,
+                                max_queries=0):
     """Enumerate channel subscribers using search-based sampling.
 
     When a query returns exactly RESULT_CAP (200) results, it likely has more
@@ -173,6 +205,8 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
             During recursive expansion, total_queries increases dynamically.
         max_depth: Maximum recursion depth for prefix expansion (0 disables).
             Default 3 matches the original squid-bot#77 spec (a -> aa -> aaa).
+        max_queries: Stop after this many API queries (0 = unlimited).
+            Useful for capping long-running enumerations on large channels.
 
     Returns:
         Dict with keys:
@@ -195,7 +229,11 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
     total_planned = len(work_queue)
     completed = 0
 
+    interrupted = False
     while work_queue:
+        # Stop if we've hit the query budget.
+        if max_queries > 0 and completed >= max_queries:
+            break
         query, depth = work_queue.popleft()
         display_q = repr(query) if query else '""'
 
@@ -223,6 +261,14 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
                 work_queue.extend(sub_queries)
                 total_planned += len(sub_queries)
 
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # Ctrl+C during API call — stop enumeration, return partial results.
+            print(
+                f"\n  Interrupted at query {completed + 1}/{total_planned}.",
+                file=sys.stderr,
+            )
+            interrupted = True
+            break
         except Exception as e:
             print(f"  Query {display_q}: error — {e}", file=sys.stderr)
             query_stats.append((display_q, 0, 0))
@@ -231,11 +277,21 @@ async def enumerate_subscribers(client, channel, strategy="full", delay=1.5,
         if progress_callback:
             progress_callback(completed, total_planned, len(all_users))
 
-        await asyncio.sleep(delay)
+        try:
+            await asyncio.sleep(delay)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            # Ctrl+C during sleep — stop enumeration, return partial results.
+            print(
+                f"\n  Interrupted at query {completed}/{total_planned}.",
+                file=sys.stderr,
+            )
+            interrupted = True
+            break
 
     return {
         "users": all_users,
         "participants": all_participants,
         "join_dates": join_dates,
         "query_stats": query_stats,
+        "interrupted": interrupted,
     }

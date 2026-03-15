@@ -100,7 +100,20 @@ async def resolve_channel(client, channel_identifier):
         pass
 
     entity = await client.get_entity(channel_identifier)
+
+    # get_entity() often returns a Channel with participants_count=None.
+    # GetFullChannelRequest populates the full metadata including the count.
     sub_count = getattr(entity, "participants_count", None)
+    if sub_count is None:
+        try:
+            from telethon.tl.functions.channels import GetFullChannelRequest
+            full = await client(GetFullChannelRequest(entity))
+            sub_count = getattr(full.full_chat, "participants_count", None)
+            if sub_count is not None:
+                entity.participants_count = sub_count
+        except Exception:
+            pass  # Non-critical — analysis still works without the count
+
     print(f"Channel: {entity.title}", file=sys.stderr)
     if sub_count:
         print(f"Subscribers: {sub_count:,}", file=sys.stderr)

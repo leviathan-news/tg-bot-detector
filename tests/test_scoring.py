@@ -423,3 +423,227 @@ class TestJoinDateScoring:
         assert score >= 5
         assert any("spike_join" in r for r in reasons)
         assert any("no_status_ever" in r for r in reasons)
+
+
+class TestCohortSignal:
+    """Test the bot_cohort_member scoring signal."""
+
+    def test_cohort_member_adds_penalty(self, clean_user):
+        """A user flagged as cohort member receives the bot_cohort_member penalty."""
+        score_no_cohort, _ = score_user(clean_user)
+        score, reasons = score_user(clean_user, cohort_data={"is_member": True})
+        assert any("bot_cohort_member" in r for r in reasons)
+        assert score == score_no_cohort + 2  # default bot_cohort_member weight = 2
+
+    def test_no_cohort_data_no_penalty(self, clean_user):
+        """Without cohort_data kwarg, no cohort signal is emitted."""
+        score, reasons = score_user(clean_user)
+        assert not any("bot_cohort_member" in r for r in reasons)
+
+    def test_cohort_not_member_no_penalty(self, clean_user):
+        """cohort_data with is_member=False adds no penalty."""
+        score_base, _ = score_user(clean_user)
+        score, reasons = score_user(clean_user, cohort_data={"is_member": False})
+        assert not any("bot_cohort_member" in r for r in reasons)
+        assert score == score_base
+
+    def test_kwargs_dont_break_existing(self, clean_user):
+        """Unexpected kwargs passed to score_user do not raise an error."""
+        score, reasons = score_user(clean_user, extra_kwarg="foo", another=42)
+        # Should behave exactly like a normal call with no extras
+        score_normal, reasons_normal = score_user(clean_user)
+        assert score == score_normal
+        assert reasons == reasons_normal
+
+    def test_cohort_member_weight_configurable(self, clean_user):
+        """bot_cohort_member weight is respected from ScoringConfig."""
+        config = ScoringConfig(bot_cohort_member=4)
+        score, reasons = score_user(clean_user, config=config, cohort_data={"is_member": True})
+        assert any("+4" in r for r in reasons)
+        assert score == 4
+
+    def test_cohort_member_stacks_with_other_signals(self, make_user):
+        """bot_cohort_member penalty stacks on top of profile signals."""
+        user = make_user(
+            status=None,   # +2 no_status_ever
+            photo=False,   # +1 no_photo
+        )
+        score, reasons = score_user(user, cohort_data={"is_member": True})
+        # 2 + 1 + 2 (cohort) + ... (other profile signals)
+        assert score >= 5
+        assert any("bot_cohort_member" in r for r in reasons)
+        assert any("no_status_ever" in r for r in reasons)
+
+
+class TestPhotoMetadataScoring:
+    """Test photo DC distribution and video avatar scoring signals.
+
+    Validated on 3,583 departed bots vs 3,069 labeled humans:
+      DC1: 63.5% bots vs 16.3% humans → +1 penalty
+      DC5:  0.2% bots vs 29.1% humans → -1 bonus
+      Video: 0.0% bots vs 4.7% humans → -1 bonus
+    """
+
+    def test_dc1_photo_adds_penalty(self, make_user):
+        """Photo on DC1 adds photo_dc_1 penalty."""
+        user = make_user(
+            first_name="Bot", last_name="Test", username="bottest",
+            photo=True, photo_dc_id=1,
+            status=UserStatusRecently(),
+        )
+        score, reasons = score_user(user)
+        assert any("photo_dc_1" in r for r in reasons)
+
+    def test_dc5_photo_gives_bonus(self, make_user):
+        """Photo on DC5 gives negative (human) signal."""
+        user = make_user(
+            first_name="Alice", last_name="Smith", username="alice",
+            photo=True, photo_dc_id=5,
+            status=UserStatusRecently(),
+        )
+        score, reasons = score_user(user)
+        assert any("photo_dc_5" in r for r in reasons)
+        # DC5 bonus should reduce score below what it would be without it.
+        user_dc2 = make_user(
+            first_name="Alice", last_name="Smith", username="alice2",
+            photo=True, photo_dc_id=2,
+            status=UserStatusRecently(),
+        )
+        score_dc2, _ = score_user(user_dc2)
+        assert score < score_dc2 or score == score_dc2 == 0
+
+    def test_dc2_no_dc_signal(self, make_user):
+        """DC2 photos trigger neither DC1 nor DC5 signals."""
+        user = make_user(
+            first_name="Bob", last_name="Jones", username="bob",
+            photo=True, photo_dc_id=2,
+            status=UserStatusRecently(),
+        )
+        _, reasons = score_user(user)
+        assert not any("photo_dc_1" in r for r in reasons)
+        assert not any("photo_dc_5" in r for r in reasons)
+
+    def test_dc4_no_dc_signal(self, make_user):
+        """DC4 is neutral (35.7% bots vs 37.2% humans) — no signal."""
+        user = make_user(
+            first_name="Carol", last_name="Lee", username="carol",
+            photo=True, photo_dc_id=4,
+            status=UserStatusRecently(),
+        )
+        _, reasons = score_user(user)
+        assert not any("photo_dc_1" in r for r in reasons)
+        assert not any("photo_dc_5" in r for r in reasons)
+
+    def test_no_photo_no_dc_signal(self, make_user):
+        """Users without photos don't trigger DC signals."""
+        user = make_user(
+            first_name="Dave", last_name="Kim", username="dave",
+            photo=False,
+            status=UserStatusRecently(),
+        )
+        _, reasons = score_user(user)
+        assert not any("photo_dc" in r for r in reasons)
+
+    def test_video_avatar_gives_bonus(self, make_user):
+        """Video avatar gives negative (human) signal."""
+        user = make_user(
+            first_name="Eve", last_name="Wu", username="eve",
+            photo=True, photo_dc_id=2, photo_has_video=True,
+            status=UserStatusRecently(),
+        )
+        score, reasons = score_user(user)
+        assert any("photo_has_video" in r for r in reasons)
+
+    def test_no_video_no_signal(self, make_user):
+        """No video avatar means no video signal."""
+        user = make_user(
+            first_name="Frank", last_name="Li", username="frank",
+            photo=True, photo_dc_id=2, photo_has_video=False,
+            status=UserStatusRecently(),
+        )
+        _, reasons = score_user(user)
+        assert not any("photo_has_video" in r for r in reasons)
+
+    def test_dc1_weight_configurable(self, make_user):
+        """photo_dc_1 weight is respected from ScoringConfig."""
+        config = ScoringConfig(photo_dc_1=3)
+        user = make_user(
+            first_name="Test", last_name="User", username="test",
+            photo=True, photo_dc_id=1,
+            status=UserStatusRecently(),
+        )
+        score, reasons = score_user(user, config=config)
+        assert any("+3" in r for r in reasons)
+
+    def test_placeholder_photo_no_dc_signal(self, make_user):
+        """String placeholder photo (no dc_id attr) triggers no DC signal."""
+        user = make_user(
+            first_name="Test", last_name="User", username="test",
+            photo=True,  # String placeholder, no photo_dc_id
+            status=UserStatusRecently(),
+        )
+        _, reasons = score_user(user)
+        assert not any("photo_dc" in r for r in reasons)
+
+    def test_dc1_stacks_with_no_username(self, make_user):
+        """DC1 penalty stacks with profile incompleteness signals."""
+        user = make_user(
+            first_name="Bot", username=None, last_name=None,
+            photo=True, photo_dc_id=1,
+            status=UserStatusRecently(),
+        )
+        score, reasons = score_user(user)
+        assert any("photo_dc_1" in r for r in reasons)
+        assert any("no_username" in r for r in reasons)
+        # no_username(+1) + no_last+no_user(+1) + photo_dc_1(+1) = 3
+        assert score >= 3
+
+
+class TestCustomColorScoring:
+    """Test custom name/chat color as a human signal.
+
+    Validated: 0.1% bots vs 14.1% humans have custom color.
+    """
+
+    def test_custom_color_gives_bonus(self, make_user):
+        """Custom color gives negative (human) signal."""
+        user = make_user(
+            first_name="Alice", last_name="Smith", username="alice",
+            photo=True, color={"color": 5},
+            status=UserStatusRecently(),
+        )
+        score, reasons = score_user(user)
+        assert any("custom_color" in r for r in reasons)
+
+    def test_no_custom_color_no_signal(self, make_user):
+        """No custom color means no signal."""
+        user = make_user(
+            first_name="Bob", last_name="Jones", username="bob",
+            photo=True, color=None,
+            status=UserStatusRecently(),
+        )
+        _, reasons = score_user(user)
+        assert not any("custom_color" in r for r in reasons)
+
+    def test_custom_color_weight_configurable(self, make_user):
+        """custom_color weight is respected from ScoringConfig."""
+        config = ScoringConfig(custom_color=-2)
+        user = make_user(
+            first_name="Test", last_name="User", username="test",
+            photo=True, color={"color": 3},
+            status=UserStatusRecently(),
+        )
+        _, reasons = score_user(user, config=config)
+        assert any("-2" in r for r in reasons)
+
+    def test_custom_color_reduces_bot_score(self, make_user):
+        """Custom color should reduce total score for borderline users."""
+        # User with no_username(+1) + no_last+no_user(+1) but has color(-1)
+        user = make_user(
+            first_name="Alex", username=None, last_name=None,
+            photo=True, color={"color": 1},
+            status=UserStatusRecently(),
+        )
+        score, reasons = score_user(user)
+        # no_username(+1) + no_last+no_user(+1) + custom_color(-1) = 1
+        assert score == 1
