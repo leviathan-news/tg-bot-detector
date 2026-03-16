@@ -58,6 +58,10 @@ class ScoringConfig:
     # Profile customization — near-zero on bot accounts.
     custom_color: int = -1     # Custom name/chat color: 0.1% bots vs 14.1% humans
 
+    # Airdrop farming — accounts stuffed with project tokens in display name.
+    airdrop_farmer: int = 2
+    airdrop_farmer_threshold: int = 2  # Minimum token count to trigger.
+
     # Join date clustering
     spike_join: int = 2
 
@@ -67,6 +71,19 @@ class ScoringConfig:
     # Positive signals (subtracted)
     premium: int = -2
     emoji_status: int = -1
+
+
+# Airdrop project tokens commonly found in bot-farm display names.
+# Each token represents a crypto airdrop project. Accounts with 2+ of these
+# in their name are farming eligibility across channels.
+# Validated on 490 confirmed airdrop farmers in @leviathan_news manual review.
+_AIRDROP_TOKENS = [
+    "uxuy", "seed", "meshchain", "airdrop", ".eth",
+    "yescoiner", "freedogs", "ducks", "memes",
+    "nordom", "starsfi", "olycoin", "blum", "catizen",
+    "🆙", "🌱", "🍅", "🥠", "🐾", "💧", "🦴", "🦆", "💠",
+    "🐍", "🐸", "⛏", "🗝",
+]
 
 
 # Sentinel for status type checks without importing Telethon at module level.
@@ -189,6 +206,16 @@ def score_user(user, config=None, join_date=None, spike_windows=None, cohort_dat
         if script_count > 1:
             score += config.mixed_scripts
             reasons.append(f"mixed_scripts(+{config.mixed_scripts})")
+
+    # Airdrop farmer detection — accounts with multiple airdrop project tokens
+    # in their display name. These users subscribe to channels in bulk to farm
+    # eligibility for token airdrops. The presence of 2+ distinct airdrop tokens
+    # is a near-certain bot indicator (validated on 490 missed bots in manual review).
+    full_name = f"{first} {last}".lower()
+    airdrop_token_count = sum(1 for token in _AIRDROP_TOKENS if token in full_name)
+    if airdrop_token_count >= config.airdrop_farmer_threshold:
+        score += config.airdrop_farmer
+        reasons.append(f"airdrop_farmer({airdrop_token_count} tokens)(+{config.airdrop_farmer})")
 
     # Photo metadata signals — DC distribution is a strong bot-farm indicator.
     # Bot farms bulk-create accounts whose profile photos are stored on specific

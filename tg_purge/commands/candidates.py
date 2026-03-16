@@ -33,6 +33,24 @@ from ..formatters import (
 )
 
 
+# Flag checked by the enumeration loop to trigger graceful shutdown.
+# Set by SIGHUP/SIGTERM handlers so tmux kill-session and `kill` also
+# save partial results instead of dying silently.
+_shutdown_requested = False
+
+
+def _request_shutdown(signum, frame):
+    """Signal handler for SIGHUP and SIGTERM.
+
+    Sets a flag that the async run() function checks after each query.
+    Also raises KeyboardInterrupt so the enumeration loop's existing
+    try/except catches it and returns partial results.
+    """
+    global _shutdown_requested
+    _shutdown_requested = True
+    raise KeyboardInterrupt
+
+
 def _load_safelist(path):
     """Load a safelist of user IDs that should be excluded from output.
 
@@ -90,7 +108,7 @@ def _load_safelist(path):
 
 
 def _score_and_export(all_users, join_dates, spike_windows, threshold, safelist,
-                      sub_count, output_path, interrupted):
+                      sub_count, output_path, interrupted, scoring_mode="heuristic"):
     """Score all users and export results. Runs synchronously so it cannot
     be cancelled by asyncio. This ensures partial results are always saved
     even if the event loop is shutting down.
@@ -104,6 +122,7 @@ def _score_and_export(all_users, join_dates, spike_windows, threshold, safelist,
         sub_count: Total channel subscriber count (for stats).
         output_path: File path for CSV/JSON export, or None for stdout.
         interrupted: Whether enumeration was interrupted (triggers partial save).
+        scoring_mode: 'heuristic', 'ml', or 'hybrid'.
     """
     # Block Ctrl+C during scoring and export so partial results are never lost.
     original_handler = signal.getsignal(signal.SIGINT)
@@ -122,18 +141,128 @@ def _score_and_export(all_users, join_dates, spike_windows, threshold, safelist,
 
         all_scored.sort(key=lambda x: -x[1])
 
-        # Filter to candidates above threshold, excluding safelist
-        candidates = [
-            (u, s, r) for u, s, r in all_scored
-            if s >= threshold and u.id not in safelist
-        ]
+        # ── ML scoring (hybrid/ml mode) ──
+        # Run ML predictions on all users using their full User objects.
+        # The feature extractor gets raw Telethon attributes (photo DC,
+        # lang_code, stories, etc.) that are lost in the CSV export.
+        ml_predictions = {}  # user_id -> {probability, label}
+        if scoring_mode in ("hybrid", "ml"):
+            try:
+                from ..features import extract_features
+                from ..ml import ml_available, predict
+
+                if ml_available():
+                    # Find the best model file available.
+                    import glob
+                    model_path = None
+                    for pattern in [
+                        "models/*_lightgbm.model",
+                        "models/*_xgboost.model",
+                        "models/*_sklearn_rf.joblib",
+                    ]:
+                        matches = sorted(glob.glob(pattern))
+                        if matches:
+                            model_path = matches[-1]
+                            break
+
+                    if model_path:
+                        print(f"\nRunning ML inference ({model_path})...", flush=True)
+
+                        # Extract photo quality metrics from stripped thumbnails
+                        # embedded in User objects (no extra API call needed).
+                        photo_quality_cache = {}
+                        try:
+                            from ..photo_analysis import extract_photo_quality
+                            for uid, user in all_users.items():
+                                pq = extract_photo_quality(user)
+                                if pq:
+                                    photo_quality_cache[uid] = pq
+                            if photo_quality_cache:
+                                print(f"  Photo quality extracted for "
+                                      f"{len(photo_quality_cache)} users")
+                        except ImportError:
+                            pass  # Module not available — skip photo features.
+
+                        # Extract feature vectors from raw User objects.
+                        feature_vectors = []
+                        user_ids_ordered = []
+                        for uid, user in all_users.items():
+                            feats = extract_features(
+                                user,
+                                join_date=join_dates.get(uid),
+                                spike_windows=spike_windows,
+                                photo_quality=photo_quality_cache.get(uid),
+                            )
+                            feature_vectors.append(feats)
+                            user_ids_ordered.append(uid)
+
+                        preds = predict(feature_vectors, model_path)
+                        for uid, pred in zip(user_ids_ordered, preds):
+                            ml_predictions[uid] = pred
+
+                        ml_bots = sum(1 for p in preds if p["label"] == "bot")
+                        print(f"ML inference complete: {ml_bots} bots detected "
+                              f"out of {len(preds)} users")
+                    else:
+                        print("Warning: no model file found in models/",
+                              file=sys.stderr)
+                else:
+                    print("Warning: ML dependencies not available",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"Warning: ML scoring failed — {e}", file=sys.stderr)
+
+        # Filter to candidates above threshold, excluding safelist.
+        # In hybrid/ml mode, also include users the ML flags as bot
+        # regardless of heuristic score.
+        candidates = []
+        for u, s, r in all_scored:
+            if u.id in safelist:
+                continue
+            ml_pred = ml_predictions.get(u.id)
+            is_ml_bot = ml_pred and ml_pred["label"] == "bot"
+            if s >= threshold or (scoring_mode in ("hybrid", "ml") and is_ml_bot):
+                candidates.append((u, s, r))
 
         safelisted_count = sum(
             1 for u, s, r in all_scored
-            if s >= threshold and u.id in safelist
+            if u.id in safelist and (
+                s >= threshold or
+                (ml_predictions.get(u.id, {}).get("label") == "bot")
+            )
         )
 
         # ── Export results ──
+        # When ML predictions are available, use a hybrid CSV format that
+        # includes both heuristic score and ML probability/label columns.
+        def _export_hybrid_csv(scored_list, path):
+            """Write CSV with heuristic + ML columns."""
+            import csv as _csv
+            with open(path, "w", newline="") as f:
+                writer = _csv.writer(f)
+                writer.writerow([
+                    "user_id", "name", "username", "heuristic_score",
+                    "ml_probability", "ml_label", "status", "signals",
+                ])
+                for user, score, reasons in scored_list:
+                    pred = ml_predictions.get(user.id, {})
+                    prob = f"{pred['probability']:.4f}" if "probability" in pred else ""
+                    label = pred.get("label", "")
+                    writer.writerow([
+                        user.id,
+                        format_name(user),
+                        user.username or "",
+                        score,
+                        prob,
+                        label,
+                        status_label(user),
+                        "; ".join(reasons),
+                    ])
+            print(f"Exported {len(scored_list)} users to {path}")
+
+        # Choose export function based on whether ML predictions exist.
+        csv_export = _export_hybrid_csv if ml_predictions else export_csv
+
         if interrupted:
             # On interrupt, ALWAYS save ALL scored users (not just
             # above-threshold candidates) so nothing from the enumeration
@@ -152,13 +281,13 @@ def _score_and_export(all_users, join_dates, spike_windows, threshold, safelist,
             if ext == "json":
                 export_json(all_scored, partial_path)
             else:
-                export_csv(all_scored, partial_path)
+                csv_export(all_scored, partial_path)
             print(f"\n  Partial results saved: {partial_path} ({len(all_scored)} users)")
         elif output_path:
             if output_path.endswith(".json"):
                 export_json(candidates, output_path)
             else:
-                export_csv(candidates, output_path)
+                csv_export(candidates, output_path)
 
         # ── Summary ──
         print(f"\n{'=' * 80}")
@@ -225,6 +354,13 @@ async def run(args):
     if safelist:
         print(f"Safelist: {len(safelist)} protected user IDs loaded")
 
+    # Install SIGHUP/SIGTERM handlers so tmux kill-session and `kill`
+    # trigger graceful shutdown with partial save, same as Ctrl+C.
+    prev_hup = signal.getsignal(signal.SIGHUP)
+    prev_term = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGHUP, _request_shutdown)
+    signal.signal(signal.SIGTERM, _request_shutdown)
+
     # Phase 1: Enumerate (async, Ctrl+C handled by enumerate_subscribers).
     # Client is disconnected in the finally block BEFORE any file I/O,
     # matching the pattern in label.py that's proven reliable.
@@ -278,7 +414,12 @@ async def run(args):
     # Score and export — runs synchronously with SIGINT blocked so
     # a second Ctrl+C cannot kill the save.
     output_path = getattr(args, "output", None)
+    scoring_mode = getattr(args, "scoring", "heuristic") or "heuristic"
     _score_and_export(
         all_users, join_dates, spike_windows, threshold, safelist,
-        sub_count, output_path, interrupted,
+        sub_count, output_path, interrupted, scoring_mode=scoring_mode,
     )
+
+    # Restore original signal handlers.
+    signal.signal(signal.SIGHUP, prev_hup)
+    signal.signal(signal.SIGTERM, prev_term)

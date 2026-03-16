@@ -78,6 +78,8 @@ FEATURE_KEYS: List[str] = [
                           # Airdrop farmers average 3-6 emoji; real users 0-1
     "name_has_crypto_kw", # 1 if name contains known crypto/airdrop project keywords
                           # (Meshchain, SEED, Drops, DeSpeed, VIA, PadTON, etc.)
+    "name_airdrop_token_count",  # Count of distinct airdrop project tokens in display name.
+                          # Accounts with 2+ are farming eligibility across channels.
     "name_username_sim",  # Jaccard similarity between name tokens and username tokens
                           # Mismatch bots: "Felipe" with @AnnPerez_720233 → sim≈0
 
@@ -277,6 +279,13 @@ def _extract_profile_features(user) -> Dict[str, float]:
     # --- Crypto/airdrop keyword detection ---
     has_crypto = _has_crypto_keywords(full_name)
 
+    # --- Airdrop token count ---
+    # Count distinct airdrop project tokens in the display name.
+    # Imported from scoring.py to keep the canonical token list in one place.
+    from .scoring import _AIRDROP_TOKENS
+    full_lower = full_name.lower()
+    airdrop_count = sum(1 for token in _AIRDROP_TOKENS if token in full_lower)
+
     # --- Name/username similarity ---
     # Bot farms generate display names and usernames from different pools.
     # Real users' usernames typically relate to their display name.
@@ -291,6 +300,7 @@ def _extract_profile_features(user) -> Dict[str, float]:
         "script_count":      float(script_count),
         "name_emoji_count":  float(emoji_count),
         "name_has_crypto_kw": float(has_crypto),
+        "name_airdrop_token_count": float(airdrop_count),
         "name_username_sim": sim,
     }
 

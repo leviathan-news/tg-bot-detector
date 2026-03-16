@@ -45,11 +45,12 @@ from tg_purge.features import (
     FEATURE_KEYS, _count_emoji, _has_crypto_keywords,
     _name_username_similarity,
 )
+from tg_purge.scoring import _AIRDROP_TOKENS
 from tg_purge.ml import train_model, ml_available
 
 
 def raw_to_feature_vector(raw: dict) -> dict:
-    """Convert raw validation fields to a 50-feature ML vector.
+    """Convert raw validation fields to a 51-feature ML vector.
 
     Maps the flat dict from validate_new_features.py's extract_all_fields()
     to the FEATURE_KEYS schema used by features.py's extract_features().
@@ -141,6 +142,10 @@ def raw_to_feature_vector(raw: dict) -> dict:
         )),
         "name_has_crypto_kw": float(_has_crypto_keywords(
             first_name + " " + (raw.get("last_name", "") or "")
+        )),
+        "name_airdrop_token_count": float(sum(
+            1 for token in _AIRDROP_TOKENS
+            if token in (first_name + " " + (raw.get("last_name", "") or "")).lower()
         )),
         "name_username_sim":  _name_username_similarity(
             first_name,
@@ -520,6 +525,19 @@ LEAKED_FEATURES = {
     "join_day_of_week":          -1.0,
     "is_spike_join":              0.0,
     "days_since_last_seen":      -1.0,
+    # Status features: exit monitoring data captures bots at the moment
+    # the farm activates them to leave — 97.6% show "online". This makes
+    # status_online/status_recently appear as bot signals, when in normal
+    # conditions they're human signals. Neutralize to prevent the model
+    # from learning "active = bot".
+    "status_empty":               0.0,
+    "status_online":              0.0,
+    "status_recently":            0.0,
+    "status_last_week":           0.0,
+    "status_last_month":          0.0,
+    "status_offline":             0.0,
+    # Cohort and photo quality: only populated during specific analysis
+    # passes, not available for all data sources.
     "is_cohort_member":           0.0,
     "cohort_size":                0.0,
     "cohort_join_spread_hours":   0.0,

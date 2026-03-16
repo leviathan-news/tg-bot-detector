@@ -806,7 +806,8 @@ class TestFeatureCompleteness:
         # Profile
         "has_photo", "has_username", "has_last_name",
         "first_name_length", "name_digit_ratio", "script_count",
-        "name_emoji_count", "name_has_crypto_kw", "name_username_sim",
+        "name_emoji_count", "name_has_crypto_kw", "name_airdrop_token_count",
+        "name_username_sim",
         # Activity status (one-hot)
         "status_empty", "status_online", "status_recently",
         "status_last_week", "status_last_month", "status_offline",
@@ -850,13 +851,13 @@ class TestFeatureCompleteness:
     def test_feature_keys_has_no_duplicates(self):
         assert len(FEATURE_KEYS) == len(set(FEATURE_KEYS))
 
-    def test_feature_count_is_50(self, make_user):
+    def test_feature_count_is_51(self, make_user):
         user = make_user()
         f = extract_features(user)
-        assert len(f) == 50
+        assert len(f) == 51
 
-    def test_feature_keys_length_is_50(self):
-        assert len(FEATURE_KEYS) == 50
+    def test_feature_keys_length_is_51(self):
+        assert len(FEATURE_KEYS) == 51
 
     def test_all_keys_present_for_deleted_user(self, deleted_user):
         # Deleted users must still produce a complete feature vector.
