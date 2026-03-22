@@ -93,6 +93,8 @@ def main():
                 break
 
             try:
+                # Ban then immediately unban = kick (removes from channel
+                # without leaving a permanent ban entry).
                 resp = requests.post(f"{api}/banChatMember", json={
                     "chat_id": args.chat_id,
                     "user_id": uid,
@@ -100,6 +102,12 @@ def main():
                 r = resp.json()
 
                 if r.get("ok"):
+                    # Unban to clear the ban list entry.
+                    requests.post(f"{api}/unbanChatMember", json={
+                        "chat_id": args.chat_id,
+                        "user_id": uid,
+                        "only_if_banned": True,
+                    }, timeout=10)
                     banned += 1
                     status = "banned"
                 elif "Too Many Requests" in r.get("description", ""):
@@ -113,6 +121,10 @@ def main():
                     }, timeout=10)
                     r2 = resp.json()
                     if r2.get("ok"):
+                        requests.post(f"{api}/unbanChatMember", json={
+                            "chat_id": args.chat_id, "user_id": uid,
+                            "only_if_banned": True,
+                        }, timeout=10)
                         banned += 1
                         status = "banned"
                     else:
